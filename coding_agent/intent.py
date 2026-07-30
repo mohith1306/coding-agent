@@ -1,0 +1,284 @@
+from dataclasses import dataclass
+import json
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Intent:
+    name: str
+    target: str = ""
+    args: Optional[dict[str, object]] = None
+    confidence: float = 0.0
+    requires_confirmation: bool = False
+    reason: str = ""
+    raw_message: str = ""
+
+
+class IntentParser:
+    """Parses coding-agent requests with an LLM."""
+
+    def __init__(self) -> None:
+        dotenv_path = Path.cwd() / ".env"
+        self._load_dotenv(dotenv_path)
+        self.provider = os.getenv("LLM_PROVIDER", "openai").lower().strip()
+        self.model = os.getenv("CODING_AGENT_INTENT_MODEL", self._default_model())
+        self.api_key = self._api_key_for_provider()
+        self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
+        self._log_configuration(dotenv_path)
+
+    def parse(self, user_message: str) -> Intent:
+        if not self.api_key:
+            return Intent(
+                name="unknown",
+                confidence=0.0,
+                reason=f"{self._api_key_name()} is not set. Add it to .env before using the LLM intent parser.",
+                raw_message=user_message,
+            )
+
+        if self.api_key in {"your-openai-api-key-here", "your-gemini-api-key-here", "your-groq-api-key-here"}:
+            return Intent(
+                name="unknown",
+                confidence=0.0,
+                reason=f"{self._api_key_name()} still contains the placeholder value in .env.",
+                raw_message=user_message,
+            )
+
+        try:
+            parsed = self._call_llm(user_message)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as error:
+            return Intent(
+                name="unknown",
+                confidence=0.0,
+                reason=f"Intent parser failed: {self._safe_error_message(error)}",
+                raw_message=user_message,
+            )
+
+        return Intent(
+            name=str(parsed.get("intent", "unknown")),
+            target=str(parsed.get("target", "")),
+            args=parsed.get("args") if isinstance(parsed.get("args"), dict) else {},
+            confidence=float(parsed.get("confidence", 0.0)),
+            requires_confirmation=bool(parsed.get("requires_confirmation", False)),
+            reason=str(parsed.get("reason", "")),
+            raw_message=user_message,
+        )
+
+    def generate(self, system_prompt: str, user_message: str) -> str:
+        logger.info("Generating content with model %s", self.model)
+        return self._call_llm_raw(system_prompt, user_message, json_mode=False)
+
+    def _call_llm(self, user_message: str) -> dict[str, object]:
+        system_prompt = self.prompt_path.read_text(encoding="utf-8")
+        content = self._call_llm_raw(system_prompt, user_message, json_mode=True)
+        parsed = json.loads(content)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM returned non-object JSON")
+
+        return parsed
+
+    def _call_llm_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        if self.provider == "gemini":
+            return self._call_gemini_raw(system_prompt, user_message, json_mode)
+
+        if self.provider == "openai":
+            return self._call_openai_raw(system_prompt, user_message, json_mode)
+
+        if self.provider == "groq":
+            return self._call_groq_raw(system_prompt, user_message, json_mode)
+
+        raise ValueError(f"Unsupported LLM_PROVIDER: {self.provider}")
+
+    def _call_openai(self, user_message: str) -> dict[str, object]:
+        content = self._call_openai_raw(self.prompt_path.read_text(encoding="utf-8"), user_message)
+        parsed = json.loads(content)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM returned non-object JSON")
+
+        return parsed
+
+    def _call_openai_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        logger.info("Calling OpenAI with model %s", self.model)
+        payload: dict[str, object] = {
+            "model": self.model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        request = Request(
+            "https://api.openai.com/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        with urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        logger.info("OpenAI returned a response")
+        return body["choices"][0]["message"]["content"]
+
+    def _call_groq(self, user_message: str) -> dict[str, object]:
+        content = self._call_groq_raw(self.prompt_path.read_text(encoding="utf-8"), user_message, json_mode=True)
+        parsed = json.loads(content)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM returned non-object JSON")
+
+        return parsed
+
+    def _call_groq_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        logger.info("Calling Groq with model %s", self.model)
+        payload: dict[str, object] = {
+            "model": self.model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        request = Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": "CodingAgent/0.1",
+            },
+            method="POST",
+        )
+
+        with urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        logger.info("Groq returned a response")
+        return body["choices"][0]["message"]["content"]
+
+    def _call_gemini(self, user_message: str) -> dict[str, object]:
+        content = self._call_gemini_raw(self.prompt_path.read_text(encoding="utf-8"), user_message, json_mode=True)
+        parsed = json.loads(content)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("LLM returned non-object JSON")
+
+        return parsed
+
+    def _call_gemini_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        logger.info("Calling Gemini with model %s", self.model)
+        payload: dict[str, object] = {
+            "system_instruction": {
+                "parts": [{"text": system_prompt}],
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [{"text": user_message}],
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0,
+            },
+        }
+        if json_mode:
+            payload["generationConfig"]["response_mime_type"] = "application/json"  # type: ignore[attr-defined]
+        request = Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        logger.info("Gemini returned a response")
+        return body["candidates"][0]["content"]["parts"][0]["text"]
+
+    def _load_dotenv(self, path: Path) -> None:
+        if not path.is_file():
+            logger.warning(".env file not found at %s", path)
+            return
+
+        logger.info("Loading environment variables from %s", path)
+
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            os.environ.setdefault(key, value)
+
+    def _log_configuration(self, dotenv_path: Path) -> None:
+        logger.info("Intent parser provider: %s", self.provider)
+        logger.info("Intent parser model: %s", self.model)
+
+        if not dotenv_path.is_file():
+            logger.warning("%s not loaded because .env is missing", self._api_key_name())
+            return
+
+        if not self.api_key:
+            logger.warning("%s is not set", self._api_key_name())
+            return
+
+        if self.api_key in {"your-openai-api-key-here", "your-gemini-api-key-here"}:
+            logger.warning("%s is present but still uses the placeholder value", self._api_key_name())
+            return
+
+        logger.info("%s is configured and will be used for intent parsing", self._api_key_name())
+
+    def _api_key_for_provider(self) -> str:
+        if self.provider == "gemini":
+            return os.getenv("GEMINI_API_KEY", "")
+
+        if self.provider == "groq":
+            return os.getenv("GROQ_API_KEY", "")
+
+        return os.getenv("OPENAI_API_KEY", "")
+
+    def _api_key_name(self) -> str:
+        if self.provider == "gemini":
+            return "GEMINI_API_KEY"
+
+        if self.provider == "groq":
+            return "GROQ_API_KEY"
+
+        return "OPENAI_API_KEY"
+
+    def _default_model(self) -> str:
+        if self.provider == "gemini":
+            return "gemini-2.0-flash"
+
+        if self.provider == "groq":
+            return "llama-3.1-8b-instant"
+
+        return "gpt-4o-mini"
+
+    def _safe_error_message(self, error: Exception) -> str:
+        if isinstance(error, HTTPError):
+            body = error.read().decode("utf-8", errors="replace")
+            return f"HTTP Error {error.code}: {body}"
+
+        return str(error)
