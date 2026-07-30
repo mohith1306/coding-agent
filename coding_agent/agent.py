@@ -4,10 +4,9 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .context import ContextBuilder
+from .context import AgentContext, ContextBuilder
 from .intent import Intent, IntentParser
 from .memory import MemoryStore
-from .planner import Planner
 from .tools.files import FileTools
 from .verifier import Verifier
 
@@ -20,40 +19,41 @@ class CodingAgent:
         self.root = Path.cwd()
         self.memory = MemoryStore()
         self.context_builder = ContextBuilder(self.memory)
-        self.planner = Planner()
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser()
         self.verifier = Verifier()
 
     def handle(self, user_message: str) -> str:
         intent = self.intent_parser.parse(user_message)
-        tool_response = self._handle_intent(intent)
-
-        if tool_response is not None:
-            self.memory.add_turn(user_message=user_message, agent_response=tool_response)
-            return tool_response
 
         context = self.context_builder.build(user_message)
-        plan = self.planner.create_plan(context)
-        verification = self.verifier.verify_no_changes()
+        tool_response = self._handle_intent(intent, context)
 
-        self.memory.add_turn(user_message=user_message, agent_response=plan.summary)
+        self.memory.add_turn(
+            user_message=user_message,
+            agent_response=tool_response or "",
+            intent=intent.name,
+            target=intent.target,
+        )
+
+        if tool_response is not None:
+            return tool_response
 
         return (
             f"I received your request and created an initial plan.\n\n"
-            f"{plan.summary}\n\n"
-            f"Verification: {verification.message}"
+            f"Context: {self.context_builder.format_for_prompt(context)}\n\n"
+            "However, I could not determine a specific action to take."
         )
 
-    def _handle_intent(self, intent: Intent) -> Optional[str]:
+    def _handle_intent(self, intent: Intent, context: Optional[AgentContext] = None) -> Optional[str]:
         if intent.name == "search_files":
             return self._handle_search(intent)
         if intent.name == "read_file":
             return self._handle_read(intent)
         if intent.name == "create_file":
-            return self._handle_create_file(intent)
+            return self._handle_create_file(intent, context)
         if intent.name == "modify_code":
-            return self._handle_modify_code(intent)
+            return self._handle_modify_code(intent, context)
         if intent.name == "delete_file":
             return self._handle_delete_file(intent)
         if intent.name == "run_command":
@@ -62,11 +62,11 @@ class CodingAgent:
                 "Command execution belongs to step 6, Terminal sandbox, so I can understand this request now but cannot execute it yet."
             )
         if intent.name == "explain":
-            return (
-                f"Intent detected: explain.\n"
-                f"Reason: {intent.reason}\n"
-                "Full explanation support will improve after the context builder step is implemented."
-            )
+            ctx_str = self.context_builder.format_for_prompt(context) if context else ""
+            parts = [f"Intent detected: explain.\nReason: {intent.reason}"]
+            if ctx_str:
+                parts.append(f"\n{ctx_str}")
+            return "\n".join(parts)
         if intent.name == "unknown" and intent.reason:
             return f"I could not parse the intent. {intent.reason}"
         return None
@@ -163,7 +163,7 @@ class CodingAgent:
 
         return None
 
-    def _handle_create_file(self, intent: Intent) -> str:
+    def _handle_create_file(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
         target = intent.target
         if not target:
             return "Usage: tell me which file to create, e.g. 'create hello.py'"
@@ -180,7 +180,7 @@ class CodingAgent:
             content = intent.args.get("content", "")
 
         if not content:
-            generated = self._generate_file_content(target, intent.raw_message)
+            generated = self._generate_file_content(target, intent.raw_message, context)
             if generated:
                 content = generated
             else:
@@ -198,17 +198,24 @@ class CodingAgent:
         action = "Overwritten" if file_exists else "Created"
         verification = self._verify_file(target_path)
 
+        self.memory.add_file_event(target, action.lower(), content)
+
         preview = content[:500]
         truncated = len(content) > len(preview)
         body = f"{preview}\n\n[Output truncated]" if truncated else preview
 
         return f"{action} `{target}`:\n\n{body}\n\n{verification}"
 
-    def _generate_file_content(self, target: str, raw_message: str) -> str:
+    def _generate_file_content(self, target: str, raw_message: str, context: Optional[AgentContext] = None) -> str:
+        ctx_block = ""
+        if context:
+            ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
         system_prompt = (
             f"You are a code generation assistant. Generate content for the file `{target}` "
-            "based on the user's request. Return ONLY the raw file content with no markdown fences, "
-            "no explanations, and no extra text."
+            "based on the user's request. "
+            "Return ONLY the raw file content. NO markdown fences, NO triple backticks, "
+            "NO explanations, NO extra text of any kind. Just the code."
+            f"{ctx_block}"
         )
         try:
             result = self.intent_parser.generate(system_prompt, raw_message)
@@ -216,7 +223,7 @@ class CodingAgent:
         except Exception:
             return ""
 
-    def _handle_modify_code(self, intent: Intent) -> str:
+    def _handle_modify_code(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
         target = intent.target
         if not target:
             return "Usage: tell me which file to modify, e.g. 'add a function to utils.py'"
@@ -231,9 +238,12 @@ class CodingAgent:
             return f"Could not read {target}: {error}"
 
         system_prompt = CODE_GEN_PROMPT.read_text(encoding="utf-8")
+        ctx_block = ""
+        if context:
+            ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
         user_prompt = (
             f"Current file ({target}):\n\n```\n{current_content}\n```\n\n"
-            f"User request: {intent.raw_message}\n\n"
+            f"User request: {intent.raw_message}{ctx_block}\n\n"
             "Return ONLY the complete new file content."
         )
 
@@ -252,6 +262,8 @@ class CodingAgent:
             self.file_tools.write_text(resolved, new_content)
         except PermissionError as error:
             return str(error)
+
+        self.memory.add_file_event(target, "modified", new_content)
 
         diff_text = self._compute_diff(current_content, new_content, target)
         verification = self._verify_file(resolved)
@@ -273,6 +285,7 @@ class CodingAgent:
 
         try:
             resolved.unlink()
+            self.memory.add_file_event(target, "deleted")
             return f"Deleted `{target}`."
         except Exception as error:
             return f"Failed to delete `{target}`: {error}"
