@@ -1,5 +1,6 @@
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 
@@ -16,6 +17,9 @@ class GitStatus:
 
 
 class GitContext:
+    def __init__(self, root: Optional[Path] = None) -> None:
+        self.root = (root or Path.cwd()).resolve()
+
     def status(self) -> GitStatus:
         branch = self._run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
         status_out = self._run(["git", "status", "--porcelain"])
@@ -75,6 +79,7 @@ class GitContext:
                 capture_output=True,
                 text=True,
                 timeout=15,
+                cwd=self.root,
             )
         except Exception as error:
             return 1, str(error)

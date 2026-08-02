@@ -1,6 +1,4 @@
 import difflib
-import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -21,15 +19,15 @@ CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"
 
 
 class CodingAgent:
-    def __init__(self) -> None:
-        self.root = Path.cwd()
-        self.memory = MemoryStore()
+    def __init__(self, memory: Optional[MemoryStore] = None, root: Optional[Path] = None) -> None:
+        self.root = (root or Path.cwd()).resolve()
+        self.memory = memory or MemoryStore()
         self.context_builder = ContextBuilder(self.memory)
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser()
-        self.verifier = Verifier()
         self.terminal = TerminalSandbox(self.root)
-        self.git = GitContext()
+        self.verifier = Verifier(root=self.root, terminal=self.terminal)
+        self.git = GitContext(root=self.root)
         self.github = GitHubIntegration(self.root)
         self.planner = Planner()
 
@@ -84,6 +82,8 @@ class CodingAgent:
             return self._handle_run_command(intent)
         if intent.name == "plan":
             return self._handle_plan(intent)
+        if intent.name == "list_tasks":
+            return self._handle_list_tasks(intent)
         if intent.name == "commit":
             return self._handle_commit(intent)
         if intent.name == "push":
@@ -139,6 +139,21 @@ class CodingAgent:
     def _handle_plan(self, intent: Intent) -> str:
         plan = self.planner.create_plan(intent.raw_message)
         return f"Here's a plan:\n\n{plan.summary}"
+
+    def _handle_list_tasks(self, intent: Intent) -> str:
+        tasks = self.memory.get_by_type("task", limit=10)
+        if not tasks:
+            return "No tasks recorded yet."
+        lines = []
+        for task in tasks:
+            meta = task["metadata"]
+            status = meta.get("status", "unknown")
+            files = meta.get("files_affected", "")
+            line = f"[{status}] {meta.get('description', '')}"
+            if files:
+                line += f" ({files})"
+            lines.append(line)
+        return "\n".join(lines)
 
     def _handle_commit(self, intent: Intent, push: bool = False) -> str:
         status = self.git.status()
@@ -337,9 +352,14 @@ class CodingAgent:
             return str(error)
 
         action = "Overwritten" if file_exists else "Created"
-        verification = self._verify_file(target_path, context)
+        verification = self.verifier.verify_file(target_path, context)
 
         self.memory.add_file_event(target, action.lower(), content)
+        self.memory.add_task(
+            description=f"Create {target}",
+            status="done",
+            files_affected=[target],
+        )
 
         preview = content[:500]
         truncated = len(content) > len(preview)
@@ -405,9 +425,14 @@ class CodingAgent:
             return str(error)
 
         self.memory.add_file_event(target, "modified", new_content)
+        self.memory.add_task(
+            description=f"Modify {target}",
+            status="done",
+            files_affected=[target],
+        )
 
         diff_text = self._compute_diff(current_content, new_content, target)
-        verification = self._verify_file(resolved, context)
+        verification = self.verifier.verify_file(resolved, context)
 
         return (
             f"Modified `{target}`:\n\n"
@@ -427,89 +452,14 @@ class CodingAgent:
         try:
             resolved.unlink()
             self.memory.add_file_event(target, "deleted")
+            self.memory.add_task(
+                description=f"Delete {target}",
+                status="done",
+                files_affected=[target],
+            )
             return f"Deleted `{target}`."
         except Exception as error:
             return f"Failed to delete `{target}`: {error}"
-
-    def _verify_file(self, path: Path, context: Optional[AgentContext] = None) -> str:
-        parts = []
-        if path.suffix == ".py":
-            parts.append(self._verify_python(path))
-        else:
-            parts.append("File written successfully.")
-
-        if context is not None:
-            project_check = self._run_project_checks(context)
-            if project_check:
-                parts.append(project_check)
-
-        return "\n".join(parts)
-
-    def _run_project_checks(self, context: AgentContext) -> str:
-        checks = []
-
-        if context.has_lint_config:
-            lint_cmd = self._lint_command(context.language)
-            if lint_cmd:
-                checks.append(("lint", lint_cmd, 20))
-
-        if context.has_test_config:
-            test_cmd = self._test_command(context.language)
-            if test_cmd:
-                checks.append(("test", test_cmd, 60))
-
-        if not checks:
-            return ""
-
-        results = []
-        for label, command, timeout in checks:
-            result = self.terminal.run(command, timeout=timeout)
-            passed = result.startswith("Exit code: 0")
-            results.append(f"{'PASS' if passed else 'FAIL'} {label}: {command}")
-
-        return "\n".join(results)
-
-    def _lint_command(self, language: str) -> Optional[str]:
-        if language == "python":
-            return "python3 -m ruff check ."
-        if language == "javascript":
-            return "npx eslint ."
-        if language == "typescript":
-            return "npx eslint ."
-        return None
-
-    def _test_command(self, language: str) -> Optional[str]:
-        if language == "python":
-            return "python3 -m pytest"
-        if language == "javascript":
-            return "npm test"
-        if language == "typescript":
-            return "npm test"
-        if language == "rust":
-            return "cargo test"
-        if language == "go":
-            return "go test ./..."
-        if language == "ruby":
-            return "bundle exec rspec"
-        return None
-
-    def _verify_python(self, path: Path) -> str:
-        abs_path = path.resolve()
-        if not abs_path.is_file():
-            return "File does not exist. Could not verify."
-
-        rel_path = str(abs_path.relative_to(self.root))
-        result = subprocess.run(
-            [sys.executable, "-m", "compileall", str(abs_path)],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0:
-            return f"Verified `{rel_path}`: compiles clean."
-        else:
-            errors = result.stderr[:500] or result.stdout[:500]
-            return f"Warning: `{rel_path}` has issues:\n{errors}"
 
     def _compute_diff(self, old: str, new: str, filename: str) -> str:
         old_lines = old.splitlines(keepends=True)

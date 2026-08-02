@@ -1,0 +1,5 @@
+# ChromaDB vector store (used for context retrieval / memory).
+chromadb>=1.5.0
+
+# LLM calls are made over the standard library (urllib) so no SDK is required.
+# The intent parser works with Groq, OpenAI, or Gemini by setting the env vars below.

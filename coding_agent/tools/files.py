@@ -26,6 +26,7 @@ class FileTools:
         safe_path.write_text(content, encoding="utf-8")
 
     def _resolve_safe_path(self, path: Path) -> Path:
+        path = Path(path)
         candidate = path if path.is_absolute() else self.root / path
         resolved = candidate.resolve()
 
