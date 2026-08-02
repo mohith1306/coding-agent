@@ -38,7 +38,7 @@ class CodingAgent:
             return self._confirmation_prompt(intent)
 
         context = self.context_builder.build(user_message)
-        tool_response = self._handle_intent(intent, context)
+        tool_response = self._handle_intent(intent, context, confirmed=confirmed)
 
         self.memory.add_turn(
             user_message=user_message,
@@ -67,7 +67,7 @@ class CodingAgent:
         ]
         return "\n".join(lines)
 
-    def _handle_intent(self, intent: Intent, context: Optional[AgentContext] = None) -> Optional[str]:
+    def _handle_intent(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> Optional[str]:
         if intent.name == "search_files":
             return self._handle_search(intent)
         if intent.name == "read_file":
@@ -81,7 +81,11 @@ class CodingAgent:
         if intent.name == "run_command":
             return self._handle_run_command(intent)
         if intent.name == "plan":
-            return self._handle_plan(intent)
+            return self._handle_plan(intent, context, confirmed)
+        if intent.name == "remember":
+            return self._handle_remember(intent)
+        if intent.name == "recall":
+            return self._handle_recall(intent)
         if intent.name == "list_tasks":
             return self._handle_list_tasks(intent)
         if intent.name == "commit":
@@ -136,9 +140,69 @@ class CodingAgent:
                     continue
         return None
 
-    def _handle_plan(self, intent: Intent) -> str:
-        plan = self.planner.create_plan(intent.raw_message)
-        return f"Here's a plan:\n\n{plan.summary}"
+    def _handle_plan(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
+        plan = self.planner.create_plan(intent.raw_message, intent.target)
+
+        if not plan.executable or not plan.target:
+            return f"Here's a plan:\n\n{plan.summary}"
+
+        if not confirmed:
+            return self._plan_confirmation_prompt(plan)
+
+        return self._execute_plan(plan, intent, context)
+
+    def _plan_confirmation_prompt(self, plan) -> str:
+        lines = [
+            CONFIRMATION_MARKER,
+            f"Action: plan_execute",
+            f"Target: {plan.target or '(none)'}",
+            "Reason: executing this plan will modify files.",
+            "",
+            "Reply with 'yes' to proceed, or anything else to cancel.",
+        ]
+        return "\n".join(lines)
+
+    def _execute_plan(self, plan, intent: Intent, context: Optional[AgentContext] = None) -> str:
+        outputs = []
+        target = plan.target
+        resolved = self._resolve_path(target)
+
+        if resolved is None:
+            create_intent = Intent(
+                name="create_file",
+                target=target,
+                args=intent.args,
+                raw_message=intent.raw_message,
+                confidence=0.9,
+            )
+            outputs.append(self._handle_create_file(create_intent, context))
+        else:
+            modify_intent = Intent(
+                name="modify_code",
+                target=target,
+                args=intent.args,
+                raw_message=intent.raw_message,
+                confidence=0.9,
+            )
+            outputs.append(self._handle_modify_code(modify_intent, context))
+
+        return "Plan executed:\n\n" + "\n\n".join(outputs)
+
+    def _handle_remember(self, intent: Intent) -> str:
+        key = intent.target or ""
+        value = ""
+        if intent.args and isinstance(intent.args, dict):
+            value = intent.args.get("value", "") or ""
+        if not key or not value:
+            return "Usage: remember <key> with value <value>, e.g. 'remember name with value Mohith'"
+        self.memory.set_preference(key, value)
+        return f"Remembered: `{key}` = `{value}`."
+
+    def _handle_recall(self, intent: Intent) -> str:
+        prefs = self.memory.list_preferences()
+        if not prefs:
+            return "I don't have anything stored yet."
+        return "\n".join(f"{p['key']}: {p['value']}" for p in prefs)
 
     def _handle_list_tasks(self, intent: Intent) -> str:
         tasks = self.memory.get_by_type("task", limit=10)

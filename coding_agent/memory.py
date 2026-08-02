@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -35,7 +36,14 @@ class MemoryStore:
         self.collection = self.client.get_or_create_collection(
             name="agent_memory",
         )
-        self._tick = 0
+        self._last_ts = 0.0
+
+    def _next_timestamp(self) -> float:
+        now = time.time()
+        if now <= self._last_ts:
+            now = self._last_ts + 1e-6
+        self._last_ts = now
+        return now
 
     def _load_dotenv(self, path: Path) -> None:
         if not path.is_file():
@@ -54,7 +62,6 @@ class MemoryStore:
     def add_turn(self, user_message: str, agent_response: str, intent: str = "", target: str = "") -> None:
         content = f"User: {user_message}\nAgent: {agent_response}"
         doc_id = str(uuid.uuid4())
-        self._tick += 1
         self.collection.add(
             documents=[content],
             metadatas=[{
@@ -64,7 +71,7 @@ class MemoryStore:
                 "agent_response": agent_response[:1000],
                 "intent": intent,
                 "target": target,
-                "timestamp": self._tick,
+                "timestamp": self._next_timestamp(),
             }],
             ids=[doc_id],
         )
@@ -98,7 +105,6 @@ class MemoryStore:
     def add_file_event(self, path: str, operation: str, content: str = "") -> None:
         text = f"[{operation}] {path}: {content[:500]}"
         doc_id = str(uuid.uuid4())
-        self._tick += 1
         self.collection.add(
             documents=[text[:2000]],
             metadatas=[{
@@ -106,7 +112,7 @@ class MemoryStore:
                 "path": path,
                 "operation": operation,
                 "content_preview": content[:500],
-                "timestamp": self._tick,
+                "timestamp": self._next_timestamp(),
             }],
             ids=[doc_id],
         )
@@ -116,7 +122,6 @@ class MemoryStore:
     def add_task(self, description: str, status: str = "pending", files_affected: Optional[list[str]] = None) -> None:
         text = f"[Task: {description}] ({status})"
         doc_id = str(uuid.uuid4())
-        self._tick += 1
         self.collection.add(
             documents=[text],
             metadatas=[{
@@ -124,7 +129,7 @@ class MemoryStore:
                 "description": description[:500],
                 "status": status,
                 "files_affected": ",".join(files_affected or []),
-                "timestamp": self._tick,
+                "timestamp": self._next_timestamp(),
             }],
             ids=[doc_id],
         )
@@ -133,14 +138,13 @@ class MemoryStore:
 
     def set_preference(self, key: str, value: str) -> None:
         doc_id = f"pref_{key}"
-        self._tick += 1
         self.collection.upsert(
             documents=[value],
             metadatas=[{
                 "doc_type": "preference",
                 "key": key,
                 "value": value[:1000],
-                "timestamp": self._tick,
+                "timestamp": self._next_timestamp(),
             }],
             ids=[doc_id],
         )
@@ -153,6 +157,22 @@ class MemoryStore:
         if results["ids"] and results["metadatas"]:
             return results["metadatas"][0].get("value")
         return None
+
+    def list_preferences(self, limit: int = 50) -> list[dict[str, str]]:
+        results = self.collection.get(
+            where={"doc_type": "preference"},
+            include=["metadatas"],
+        )
+        merged = []
+        if results["ids"]:
+            for i in range(len(results["ids"])):
+                meta = results["metadatas"][i]
+                merged.append({
+                    "key": meta.get("key", ""),
+                    "value": meta.get("value", ""),
+                })
+        merged.sort(key=lambda p: p["key"])
+        return merged[:limit]
 
     # -- vector retrieval --
 

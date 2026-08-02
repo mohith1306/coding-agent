@@ -143,8 +143,9 @@ Directory structure            = forbidden (recursive scan)
 Total file/directory counts    = forbidden (recursive scan)
 Dependency list/versions       = forbidden (file reads × N)
 File metadata (size, mtime)    = forbidden (stat calls)
-Persistent task memory         = forbidden (file writes)
 Full file content              = only for the target file, only when needed
+
+Task/preference memory is stored in ChromaDB (a single API call), not by touching the filesystem, so it stays within the cost budget.
 ```
 
 ## Prompt Format

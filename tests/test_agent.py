@@ -11,6 +11,7 @@ class FakeMemory:
     def __init__(self) -> None:
         self.turns = []
         self.tasks = []
+        self.preferences = {}
 
     def add_turn(self, user_message, agent_response, intent="", target=""):
         self.turns.append((user_message, agent_response, intent, target))
@@ -39,10 +40,13 @@ class FakeMemory:
         pass
 
     def set_preference(self, key, value):
-        pass
+        self.preferences[key] = value
 
     def get_preference(self, key):
-        return None
+        return self.preferences.get(key)
+
+    def list_preferences(self):
+        return [{"key": k, "value": v} for k, v in sorted(self.preferences.items())]
 
 
 @pytest.fixture
@@ -52,8 +56,8 @@ def agent(workspace: Path, monkeypatch) -> CodingAgent:
     return agent
 
 
-def _intent(name, target="", raw="", confirm=False):
-    return Intent(name=name, target=target, raw_message=raw, confidence=0.9, requires_confirmation=confirm)
+def _intent(name, target="", raw="", confirm=False, args=None):
+    return Intent(name=name, target=target, raw_message=raw, confidence=0.9, requires_confirmation=confirm, args=args or {})
 
 
 def test_confirmation_required_when_not_confirmed(agent: CodingAgent) -> None:
@@ -119,3 +123,43 @@ def test_list_tasks_with_tasks(agent: CodingAgent) -> None:
     response = agent.handle("show tasks")
     assert "Create x.py" in response
     assert "done" in response
+
+
+def test_remember_and_recall(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("remember", "name", raw=msg, args={"value": "Mohith"})
+    response = agent.handle("remember my name is Mohith")
+    assert "Remembered" in response
+    assert agent.memory.get_preference("name") == "Mohith"
+
+    agent.intent_parser.parse = lambda msg: _intent("recall", "", raw=msg)
+    response = agent.handle("what do you remember")
+    assert "name: Mohith" in response
+
+
+def test_plan_executes_create(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("plan", "hello.py", raw=msg, confirm=True)
+    agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
+
+    r1 = agent.handle("plan and implement hello.py")
+    assert r1.startswith(CONFIRMATION_MARKER)
+
+    r2 = agent.handle("plan and implement hello.py", confirmed=True)
+    assert "Plan executed" in r2
+    assert (workspace / "hello.py").read_text() == "print('hello')"
+
+
+def test_plan_executes_modify(agent: CodingAgent, workspace: Path) -> None:
+    (workspace / "utils.py").write_text("print('old')\n")
+    agent.intent_parser.parse = lambda msg: _intent("plan", "utils.py", raw=msg, confirm=True)
+    agent.intent_parser.generate = lambda sys_p, user_p: "print('new')\n"
+
+    r2 = agent.handle("plan and implement in utils.py", confirmed=True)
+    assert "Plan executed" in r2
+    assert "Modified" in r2
+    assert (workspace / "utils.py").read_text() == "print('new')\n"
+
+
+def test_plan_not_executable(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("plan", "", raw=msg)
+    response = agent.handle("plan out how to build a login feature")
+    assert response.startswith("Here's a plan")

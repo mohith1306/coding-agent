@@ -21,39 +21,29 @@ User request
 
 ```text
 Product:  ChromaDB
-Mode:     Embedded (no server)
+Mode:     Cloud (server-side, single database for all memory)
 Index:    HNSW (Hierarchical Navigable Small World)
 Metric:   Cosine similarity
-Storage:  Persistent, local directory
+Storage:  Chroma Cloud
 ```
 
 ChromaDB is chosen because:
 
-- Embedded mode — zero infrastructure
 - HNSW built-in with configurable M (connections) and ef_construction
 - Cosine similarity as default distance
-- Persistent to disk
 - Stores metadata alongside vectors
-- No server process needed
+- Cloud mode means no local persistence to manage; one database serves all clients
+- Credentials come from `.env` (`CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_API_KEY`)
 
 ## Embeddings
 
-Option A — Local (recommended for privacy/offline):
-
 ```text
-Model:  sentence-transformers/all-MiniLM-L6-v2
-Size:   ~80 MB
-Dim:    384
-Speed:  ~10ms per embed on CPU
+Provider: Chroma's default ONNX embedding model (all-MiniLM-L6-v2)
+Dim:      384
+Cache:    downloaded on first use to ~/.cache/chroma
 ```
 
-Option B — API:
-
-```text
-Model:  OpenAI text-embedding-3-small
-Dim:    512 (or 1536 with dimension parameter)
-Cost:   ~$0.0001 per embed (negligible for CLI usage)
-```
+The query is embedded client-side before the HNSW nearest-neighbor search.
 
 ## Collection Schema
 
@@ -64,20 +54,20 @@ Document type: "chat"
   embedding: vector
   metadata:
     doc_type: "chat"
-    session_id: str
     role: "user" | "agent"
-    content: str (truncated to 2000 chars)
+    content: str (truncated to 1000 chars)
+    agent_response: str (truncated to 1000 chars)
     intent: str
     target: str
-    timestamp: float
+    timestamp: float (time.time())
 
 Document type: "file"
   embedding: vector
   metadata:
     doc_type: "file"
     path: str
-    content_preview: str (first 2000 chars)
-    operation: "read" | "created" | "modified" | "deleted"
+    content_preview: str (first 500 chars)
+    operation: "created" | "modified" | "deleted"
     timestamp: float
 
 Document type: "task"
@@ -85,48 +75,50 @@ Document type: "task"
   metadata:
     doc_type: "task"
     description: str
-    status: "completed" | "in_progress" | "failed"
-    files_affected: list[str]
+    status: "pending" | "done"
+    files_affected: str (comma-joined)
+    timestamp: float
+
+Document type: "preference"
+  embedding: vector
+  metadata:
+    doc_type: "preference"
+    key: str
+    value: str (truncated to 1000 chars)
     timestamp: float
 ```
 
 ## HNSW Configuration
 
-```python
-collection_config = {
-    "hnsw:space": "cosine",
-    "hnsw:M": 16,              # connections per node (higher = more accurate but slower)
-    "hnsw:ef_construction": 200,  # index quality (higher = better recall)
-    "hnsw:ef_search": 50,      # search depth (higher = more accurate but slower)
-}
-```
+Chroma Cloud applies HNSW indexing with cosine distance by default; no custom config is required from the client.
 
 ## Retrieval Logic
 
 ```python
-def retrieve_context(query: str, k: int = 5) -> str:
-    query_embedding = embed(query)
+def retrieve_similar(query: str, k: int = 5, doc_type: str | None = None, max_distance: float = 0.95) -> list[dict]:
+    where = {"doc_type": doc_type} if doc_type else None
     results = collection.query(
-        query_embeddings=[query_embedding],
+        query_texts=[query],
         n_results=k,
-        include=["metadatas", "distances"],
+        where=where,
+        include=["metadatas", "documents", "distances"],
     )
 
-    # Filter by distance (cosine similarity threshold)
-    results = [r for r in results if r.distance < 0.4]
-
-    # Build context block
-    blocks = []
-    for result in results:
-        if result.doc_type == "chat":
-            blocks.append(f"[{result.role}] {result.content[:500]}")
-        elif result.doc_type == "file":
-            blocks.append(f"[File: {result.path}] {result.content_preview[:300]}")
-        elif result.doc_type == "task":
-            blocks.append(f"[Task: {result.description}] ({result.status})")
-
-    return "\n".join(blocks)
+    # Filter by cosine distance threshold
+    merged = [
+        {
+            "id": results["ids"][0][i],
+            "document": results["documents"][0][i],
+            "metadata": results["metadatas"][0][i],
+            "distance": results["distances"][0][i],
+        }
+        for i in range(len(results["ids"][0]))
+        if results["distances"][0][i] <= max_distance
+    ]
+    return merged
 ```
+
+Relevant matches typically land at cosine distance ~0.74-0.83; unrelated topics exceed `max_distance` and are filtered out.
 
 ## Context Prompt Format
 
@@ -134,41 +126,33 @@ When injected into LLM calls, the retrieved context is formatted as:
 
 ```text
 --- Related Context ---
-[user] can you add error handling to the login function
-[agent] I'll modify auth.py to add try/except blocks
-[File: src/auth.py] def login(username, password):
-[Task: Add error handling to auth.py] (in_progress)
+[File: src/auth.py] (modified) def login(username, password):
+[Related] can you add error handling to the login function
 ```
+
+If vector search returns nothing, the builder falls back to the most recent file events.
 
 ## Storage Layout
 
-```text
-.coding-agent/
-  chromadb/           ChromaDB persistent data
-  embeddings_cache/   Optional local embedding model cache
-```
-
-No additional databases. ChromaDB replaces SQLite entirely.
+Chroma Cloud hosts the single `agent_memory` collection. The local Chroma cache lives in `~/.cache/chroma`. No local database directory is used.
 
 ## Dependencies
 
 ```text
-chromadb>=0.5.0
-sentence-transformers>=2.2.0   (if using local embeddings)
+chromadb>=1.5.0
 ```
 
-## Benefits Over Current Approach
+LLM calls (intent parsing, code generation) use only the standard library (`urllib`); no SDK is required.
+
+## Benefits
 
 ```text
-Current: last 5 turns by position only
--> Ignores earlier but relevant context
-
 Vector: top 5 turns by semantic relevance
 -> Finds relevant context from entire session history
 
-Current: no file memory across sessions
--> Agent forgets what files it created yesterday
-
 Vector: file edits are embedded and searchable
 -> Agent remembers "oh, I already created that utility function"
+
+Vector: tasks and preferences persisted across sessions
+-> Agent remembers ongoing work and personal facts
 ```

@@ -1,126 +1,80 @@
 # Coding Agent
 
-This project is a Python CLI coding agent built from the recommended architecture in `coding-agent-architecture.md`.
+A Python CLI coding agent that understands natural-language requests and acts on a git workspace: search, read, create, modify, delete, and run files; inspect git and GitHub state; commit and push; and remember facts across sessions.
 
-## Current Status
+## Features
 
-Implemented:
+```text
+search_files          Search files by glob or natural language
+read_file             Read a file (single path or glob)
+create_file           Create a file (inline content or LLM-generated)
+modify_code           Edit a file, show a diff, auto-verify
+delete_file           Delete a file (requires confirmation)
+run_command           Run commands in a terminal sandbox
+plan                  Print a step-by-step plan
+list_tasks            List recorded tasks
+remember / recall     Store and recall key-value preferences
+commit / push         Stage, commit, and push (requires confirmation)
+list_issues           List GitHub issues
+list_prs              List GitHub pull requests
+explain               Explain the detected intent
+```
 
-1. Basic chat interface
-2. File search and file read tools (single + glob)
-3. LLM-backed intent parser (Groq/Gemini/OpenAI)
-4. File editor (create, modify, delete)
-5. Diff view on file modifications
-6. Auto-verifier (Python compile check after create/modify)
-7. Relative path resolution for nested files
-8. Vector context retrieval (ChromaDB, HNSW + cosine similarity)
-9. Terminal sandbox (safe command execution for run_command)
-10. Git context tool
-11. GitHub integration (list issues / PRs via gh CLI)
-12. Task planner
+Context is retrieved semantically from a ChromaDB vector store (HNSW + cosine similarity) and injected into LLM calls. Risky operations (delete, install, commit, push) always require confirmation.
 
-The current version is intentionally minimal. It gives you a working CLI loop and clean places to add each capability in the recommended build order.
+## Setup
 
-## Run
+1. Install dependencies:
+
+   ```bash
+   python3 -m pip install -r requirements.txt
+   ```
+
+2. Create `.env` in the project root:
+
+   ```text
+   LLM_PROVIDER=groq
+   GROQ_API_KEY=your-groq-api-key-here
+   CODING_AGENT_INTENT_MODEL=llama-3.3-70b-versatile
+
+   # Optional: GitHub integration
+   GITHUB_TOKEN=your-github-pat-here
+
+   # Chroma Cloud credentials (vector memory)
+   CHROMA_TENANT=your-tenant
+   CHROMA_DATABASE=your-database
+   CHROMA_API_KEY=your-api-key
+   ```
+
+   Supported providers: `groq`, `gemini`, `openai` (see `intent.py` for the matching `*_API_KEY` and model names).
+
+3. Run:
+
+   ```bash
+   python3 -m coding_agent
+   ```
+
+   Type a request and press Enter. Use `exit`, `quit`, or `:q` to stop.
+
+## Tests
 
 ```bash
-python3 -m coding_agent
+python3 -m pip install pytest
+python3 -m pytest tests/
 ```
 
-Type a message and press Enter. Use `exit`, `quit`, or `:q` to stop.
+The suite covers the terminal sandbox, git operations, file tools, agent confirmation flow, task/preference memory, and the verifier.
 
-## Current Commands
+## How It Works
 
-```text
-search **/*.py          List matching files
-search for .md file     Natural-language search
-
-read README.md          Read a file
-read agent.py           Auto-resolves to coding_agent/agent.py
-read all the .md files  Read content of all matching files
-
-create hello.py with content print("hi")
-                        Create file with inline content
-create hello.py         Auto-generates content via LLM
-
-modify hello.py to change goodbye to hello
-                        Edits file, shows diff, verifies
-
-delete hello.py         Delete a file
-```
-
-All file access is restricted to the current workspace directory.
-
-## Intent Parser
-
-The agent uses an LLM-backed intent parser. It can identify these intents:
-
-```text
-search_files
-read_file
-create_file
-modify_code
-delete_file
-run_command
-explain
-unknown
-```
-
-Before running the agent, configure the LLM provider in `.env`.
-
-For Gemini:
-
-```text
-LLM_PROVIDER=gemini
-GEMINI_API_KEY=your-gemini-api-key-here
-CODING_AGENT_INTENT_MODEL=gemini-2.0-flash
-```
-
-For Groq:
-
-```text
-LLM_PROVIDER=groq
-GROQ_API_KEY=your-groq-api-key-here
-CODING_AGENT_INTENT_MODEL=llama-3.3-70b-versatile
-```
-
-For OpenAI:
-
-```text
-LLM_PROVIDER=openai
-OPENAI_API_KEY=your-openai-api-key-here
-CODING_AGENT_INTENT_MODEL=gpt-4o-mini
-```
-
-You can override it:
-
-```text
-CODING_AGENT_INTENT_MODEL=gemini-2.0-flash
-```
-
-The CLI loads `.env` automatically from the project root.
-
-Startup logs show whether `.env` was loaded, which provider/model is selected, and whether the provider-specific API key is configured. The actual API key is never printed.
-
-Examples:
-
-```text
-search for .md file
-read the content from coding-agent-architecture.md file
-i want to create a sample.txt file
-```
-
-The intent system prompt is stored at:
-
-```text
-coding_agent/prompts/intent_system_prompt.md
-```
-
-Currently executable: `search_files`, `read_file`, `create_file`, `modify_code`, `delete_file`, `run_command`, `explain`, `plan`, `list_issues`, and `list_prs`.
-
-## Build Order
-
-All items in the original build order are now implemented. The architecture docs describe the vector context retrieval (`vector-context-architecture.md`) and context builder (`context-builder-architecture.md`).
+- `cli.py` — interactive loop, drives the confirmation flow
+- `agent.py` — intent dispatch, file ops, git commit/push, task and preference handlers
+- `intent.py` — LLM-backed intent parser (Groq/OpenAI/Gemini via stdlib urllib)
+- `context.py` — builds project + related-context for LLM calls
+- `memory.py` — ChromaDB-backed memory (chat turns, file events, tasks, preferences)
+- `verifier.py` — compile checks and project test/lint runs
+- `planner.py` — step plan generation
+- `tools/` — files, terminal sandbox, git, GitHub REST integration
 
 ## Project Structure
 
@@ -133,10 +87,16 @@ coding_agent/
   intent.py          Intent parser
   prompts/           LLM system prompts
   planner.py         Task planner
-  memory.py          Short-term memory store
-  verifier.py        Verification result handling
+  memory.py          ChromaDB-backed memory store
+  verifier.py        File + project verification
   tools/
     files.py         File search/read/edit tools
-    terminal.py      Terminal sandbox placeholder
-    git.py           Git context placeholder
-    github.py        GitHub integration placeholder
+    terminal.py      Terminal sandbox
+    git.py           Git status / stage / commit / push
+    github.py        GitHub issues and PRs (REST API)
+tests/               pytest suite
+```
+
+## Architecture
+
+Design notes are in `context-builder-architecture.md` and `vector-context-architecture.md`. The memory layer uses ChromaDB Cloud rather than the embedded mode described in the original docs.
