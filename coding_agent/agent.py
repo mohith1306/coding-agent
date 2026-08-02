@@ -84,6 +84,12 @@ class CodingAgent:
             return self._handle_run_command(intent)
         if intent.name == "plan":
             return self._handle_plan(intent)
+        if intent.name == "commit":
+            return self._handle_commit(intent)
+        if intent.name == "push":
+            return self._handle_push(intent)
+        if intent.name == "commit_and_push":
+            return self._handle_commit(intent, push=True)
         if intent.name == "list_issues":
             return self._handle_list_issues(intent)
         if intent.name == "list_prs":
@@ -103,11 +109,84 @@ class CodingAgent:
         if not command:
             return "Usage: tell me which command to run, e.g. 'run python --version'"
 
+        file_command = self._resolve_run_file(command)
+        if file_command:
+            return self.terminal.run(file_command)
+
         return self.terminal.run(command)
+
+    def _resolve_run_file(self, command: str) -> Optional[str]:
+        candidate = Path(command)
+        if candidate.suffix:
+            name = candidate.name
+        else:
+            name = f"{candidate.name}.py"
+
+        matches = sorted(self.root.rglob(name))
+        for match in matches:
+            if match.is_file():
+                try:
+                    resolved = match.resolve()
+                    if self.file_tools.exists(resolved):
+                        relative = str(resolved.relative_to(self.root))
+                        if resolved.suffix == ".py":
+                            return f"python3 {relative}"
+                        return f"{relative}"
+                except PermissionError:
+                    continue
+        return None
 
     def _handle_plan(self, intent: Intent) -> str:
         plan = self.planner.create_plan(intent.raw_message)
         return f"Here's a plan:\n\n{plan.summary}"
+
+    def _handle_commit(self, intent: Intent, push: bool = False) -> str:
+        status = self.git.status()
+        if status.is_clean:
+            return "Nothing to commit. Working tree is clean."
+
+        message = self._commit_message(intent, status)
+        if not message:
+            return "No commit message could be determined. Try 'commit <message>'."
+
+        staged = self.git.stage_all()
+        if staged:
+            return f"Failed to stage changes:\n{staged}"
+
+        code, output = self.git.commit(message)
+        if code != 0:
+            return f"Commit failed:\n{output}"
+
+        lines = [f"Committed: `{message}` (hash: {self.git.current_hash()})"]
+        if push:
+            push_code, push_output = self.git.push()
+            if push_code != 0:
+                lines.append(f"Push failed:\n{self._short_error(push_output)}")
+            else:
+                lines.append("Pushed to origin.")
+        return "\n".join(lines)
+
+    def _commit_message(self, intent: Intent, status) -> str:
+        if intent.target:
+            return intent.target
+        if status.dirty_files:
+            names = ", ".join(status.dirty_files[:5])
+            return f"Update {names}"
+        return ""
+
+    def _handle_push(self, intent: Intent) -> str:
+        status = self.git.status()
+        code, output = self.git.push()
+        if code != 0:
+            return f"Push failed:\n{self._short_error(output)}"
+        lines = [f"Pushed to {status.branch}."]
+        if status.ahead:
+            lines.append(f"{status.ahead} commit(s) pushed.")
+        return "\n".join(lines)
+
+    def _short_error(self, output: str) -> str:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
+        return "\n".join(lines[:3]) if lines else output
 
     def _handle_list_issues(self, intent: Intent) -> str:
         state = intent.target or "open"

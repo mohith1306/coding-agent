@@ -24,10 +24,9 @@ class GitContext:
         dirty = []
         if status_out:
             for line in status_out.split("\n"):
-                line = line.strip()
-                if not line:
+                if not line.strip():
                     continue
-                filename = line[3:] if len(line) > 3 else line
+                filename = line[2:].strip()
                 if filename:
                     dirty.append(filename)
 
@@ -48,16 +47,36 @@ class GitContext:
             behind=behind,
         )
 
+    def stage_all(self) -> str:
+        code, output = self._run_result(["git", "add", "-A"])
+        if code != 0:
+            return output
+        return ""
+
+    def commit(self, message: str) -> tuple[int, str]:
+        return self._run_result(["git", "commit", "-m", message])
+
+    def push(self) -> tuple[int, str]:
+        return self._run_result(["git", "push"])
+
+    def current_hash(self) -> str:
+        return self._run(["git", "rev-parse", "--short", "HEAD"]) or "none"
+
     def _run(self, args: list[str], check: bool = True) -> str:
+        code, output = self._run_result(args)
+        if check and code != 0:
+            return ""
+        return output.strip()
+
+    def _run_result(self, args: list[str]) -> tuple[int, str]:
         try:
             result = subprocess.run(
                 args,
                 capture_output=True,
                 text=True,
-                timeout=5,
+                timeout=15,
             )
-        except Exception:
-            return ""
-        if check and result.returncode != 0:
-            return ""
-        return result.stdout.strip()
+        except Exception as error:
+            return 1, str(error)
+        output = (result.stdout + "\n" + result.stderr).strip()
+        return result.returncode, output

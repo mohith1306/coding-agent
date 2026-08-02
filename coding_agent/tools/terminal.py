@@ -1,4 +1,3 @@
-import shlex
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -34,6 +33,8 @@ class TerminalSandbox:
         block_reason = self._check_blocked(command)
         if block_reason:
             return block_reason
+
+        command = self._normalize_python_command(command)
 
         try:
             result = subprocess.run(
@@ -73,3 +74,22 @@ class TerminalSandbox:
             if lowered.startswith(prefix):
                 return f"Blocked: command `{command}` is not allowed in the sandbox."
         return None
+
+    def _normalize_python_command(self, command: str) -> str:
+        if not command.startswith("python "):
+            return command
+        if self._has_binary("python"):
+            return command
+        return "python3" + command[len("python"):]
+
+    def _has_binary(self, name: str) -> bool:
+        try:
+            result = subprocess.run(
+                ["which", name],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except Exception:
+            return False

@@ -1,4 +1,5 @@
 import logging
+import os
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -9,22 +10,44 @@ import chromadb
 logger = logging.getLogger(__name__)
 
 
-TENANT = "fc88920c-2c38-4228-abe3-ee448a2d7fa6"
-DATABASE = "Coding_Agent"
-API_KEY = "ck-34rspAKf7QoKJiNSqi7ZE27wVAHnd5gx775ZcfLjUTmA"
+DEFAULT_TENANT = "fc88920c-2c38-4228-abe3-ee448a2d7fa6"
+DEFAULT_DATABASE = "Coding_Agent"
 
 
 class MemoryStore:
     def __init__(self, storage_dir: Optional[Path] = None) -> None:
+        self._load_dotenv(Path.cwd() / ".env")
+        tenant = os.getenv("CHROMA_TENANT", DEFAULT_TENANT)
+        database = os.getenv("CHROMA_DATABASE", DEFAULT_DATABASE)
+        api_key = os.getenv("CHROMA_API_KEY", "")
+
+        if not api_key:
+            raise RuntimeError(
+                "CHROMA_API_KEY is not set. Add it to .env "
+                "(copy from your Chroma Cloud dashboard)."
+            )
+
         self.client = chromadb.CloudClient(
-            tenant=TENANT,
-            database=DATABASE,
-            api_key=API_KEY,
+            tenant=tenant,
+            database=database,
+            api_key=api_key,
         )
         self.collection = self.client.get_or_create_collection(
             name="agent_memory",
         )
         self._tick = 0
+
+    def _load_dotenv(self, path: Path) -> None:
+        if not path.is_file():
+            return
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            os.environ.setdefault(key, value)
 
     # -- chat turns --
 
