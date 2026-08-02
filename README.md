@@ -22,6 +22,8 @@ explain               Explain the detected intent
 
 Context is retrieved semantically from a ChromaDB vector store (HNSW + cosine similarity) and injected into LLM calls. Risky operations (delete, install, commit, push) always require confirmation.
 
+There is also a **web app** (FastAPI backend + React frontend) that wraps the agent with a chat UI. See [Web App](#web-app) below.
+
 ## Setup
 
 1. Install dependencies:
@@ -65,6 +67,52 @@ python3 -m pytest tests/
 
 The suite covers the terminal sandbox, git operations, file tools, agent confirmation flow, task/preference memory, and the verifier.
 
+## Web App
+
+A FastAPI backend + React (Vite) chat UI that wraps the same agent.
+
+### Run locally (development)
+
+Terminal 1 — backend:
+
+```bash
+python3 -m pip install -r web/backend/requirements.txt
+python3 -m uvicorn web.backend.app:app --reload --port 8000
+```
+
+Terminal 2 — frontend:
+
+```bash
+cd web/frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. Vite proxies `/api` and `/health` to the backend.
+
+### Run the full app (single process, production build)
+
+```bash
+cd web/frontend && npm run build && cd ../..
+python3 -m uvicorn web.backend.app:app --host 0.0.0.0 --port 8000
+```
+
+The backend serves the built frontend from `web/frontend/dist` at `/`.
+
+### Deploy to Railway or Render
+
+The `web/Dockerfile` is a multi-stage build (Node builds the frontend, Python runs the backend) and is referenced by both `railway.toml` and `render.yaml`.
+
+1. Push the repo to GitHub.
+2. **Railway** — create a new project, point it at the repo. Railway auto-detects `railway.toml`. Set the env vars below in the dashboard.
+3. **Render** — use "New Blueprint", select the repo; `render.yaml` defines the service and env vars.
+
+Required env vars (see `.env.example`): `LLM_PROVIDER`, `GROQ_API_KEY` (or the key for your provider), `CODING_AGENT_INTENT_MODEL`, `CHROMA_TENANT`, `CHROMA_DATABASE`, `CHROMA_API_KEY`. `GITHUB_TOKEN` is optional.
+
+Notes:
+- Each browser session gets its own sandboxed workspace under `web/workspaces/`.
+- The `run_command` terminal sandbox executes shell commands server-side; only deploy this to trusted environments.
+
 ## How It Works
 
 - `cli.py` — interactive loop, drives the confirmation flow
@@ -95,6 +143,10 @@ coding_agent/
     git.py           Git status / stage / commit / push
     github.py        GitHub issues and PRs (REST API)
 tests/               pytest suite
+web/
+  backend/           FastAPI app wrapping the agent
+  frontend/          React (Vite) chat UI
+  Dockerfile         Multi-stage build (frontend + backend)
 ```
 
 ## Architecture

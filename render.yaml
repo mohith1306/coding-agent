@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: coding-agent
+    runtime: docker
+    plan: free
+    dockerfilePath: ./web/Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: LLM_PROVIDER
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CODING_AGENT_INTENT_MODEL
+        value: llama-3.3-70b-versatile
+      - key: CHROMA_TENANT
+        sync: false
+      - key: CHROMA_DATABASE
+        sync: false
+      - key: CHROMA_API_KEY
+        sync: false

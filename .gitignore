@@ -11,3 +11,8 @@ venv/
 *.log
 .DS_Store
 .coding-agent/
+
+# Web app
+web/frontend/node_modules/
+web/frontend/dist/
+web/workspaces/

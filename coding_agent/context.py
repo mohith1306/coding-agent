@@ -40,9 +40,9 @@ class AgentContext:
 
 
 class ContextBuilder:
-    def __init__(self, memory: MemoryStore) -> None:
+    def __init__(self, memory: MemoryStore, root: Optional[Path] = None) -> None:
         self.memory = memory
-        self.root = Path.cwd()
+        self.root = (root or Path.cwd()).resolve()
 
     def build(self, user_message: str) -> AgentContext:
         chat_history = self.memory.recent_turns(5)
