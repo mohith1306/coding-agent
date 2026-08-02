@@ -1,9 +1,10 @@
 import logging
 
-from .agent import CodingAgent
+from .agent import CONFIRMATION_MARKER, CodingAgent
 
 
 EXIT_COMMANDS = {"exit", "quit", ":q"}
+CONFIRM_YES = {"yes", "y"}
 
 
 def main() -> None:
@@ -29,4 +30,24 @@ def main() -> None:
             return
 
         response = agent.handle(user_input)
+
+        if response.startswith(CONFIRMATION_MARKER):
+            print(f"\nAgent: {response}")
+            try:
+                confirm = input("\nProceed? (yes/no): ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                continue
+
+            if confirm in CONFIRM_YES:
+                response = agent.handle(user_input, confirmed=True)
+                print(f"\nAgent: {response}")
+            else:
+                print("\nAgent: Cancelled.")
+            continue
+
         print(f"\nAgent: {response}")
+
+
+if __name__ == "__main__":
+    main()

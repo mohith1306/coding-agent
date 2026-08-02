@@ -7,11 +7,17 @@ from typing import Optional
 from .context import AgentContext, ContextBuilder
 from .intent import Intent, IntentParser
 from .memory import MemoryStore
+from .planner import Planner
 from .tools.files import FileTools
+from .tools.git import GitContext
+from .tools.github import GitHubIntegration
+from .tools.terminal import TerminalSandbox
 from .verifier import Verifier
 
 
 CODE_GEN_PROMPT = (Path(__file__).parent / "prompts" / "code_generation_prompt.md")
+
+CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"
 
 
 class CodingAgent:
@@ -22,9 +28,16 @@ class CodingAgent:
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser()
         self.verifier = Verifier()
+        self.terminal = TerminalSandbox(self.root)
+        self.git = GitContext()
+        self.github = GitHubIntegration(self.root)
+        self.planner = Planner()
 
-    def handle(self, user_message: str) -> str:
+    def handle(self, user_message: str, confirmed: bool = False) -> str:
         intent = self.intent_parser.parse(user_message)
+
+        if intent.requires_confirmation and not confirmed:
+            return self._confirmation_prompt(intent)
 
         context = self.context_builder.build(user_message)
         tool_response = self._handle_intent(intent, context)
@@ -45,6 +58,17 @@ class CodingAgent:
             "However, I could not determine a specific action to take."
         )
 
+    def _confirmation_prompt(self, intent: Intent) -> str:
+        lines = [
+            CONFIRMATION_MARKER,
+            f"Action: {intent.name}",
+            f"Target: {intent.target or '(none)'}",
+            f"Reason: {intent.reason or 'risky operation'}",
+            "",
+            "Reply with 'yes' to proceed, or anything else to cancel.",
+        ]
+        return "\n".join(lines)
+
     def _handle_intent(self, intent: Intent, context: Optional[AgentContext] = None) -> Optional[str]:
         if intent.name == "search_files":
             return self._handle_search(intent)
@@ -57,10 +81,13 @@ class CodingAgent:
         if intent.name == "delete_file":
             return self._handle_delete_file(intent)
         if intent.name == "run_command":
-            return (
-                f"Intent detected: run command `{intent.target}`.\n"
-                "Command execution belongs to step 6, Terminal sandbox, so I can understand this request now but cannot execute it yet."
-            )
+            return self._handle_run_command(intent)
+        if intent.name == "plan":
+            return self._handle_plan(intent)
+        if intent.name == "list_issues":
+            return self._handle_list_issues(intent)
+        if intent.name == "list_prs":
+            return self._handle_list_prs(intent)
         if intent.name == "explain":
             ctx_str = self.context_builder.format_for_prompt(context) if context else ""
             parts = [f"Intent detected: explain.\nReason: {intent.reason}"]
@@ -70,6 +97,41 @@ class CodingAgent:
         if intent.name == "unknown" and intent.reason:
             return f"I could not parse the intent. {intent.reason}"
         return None
+
+    def _handle_run_command(self, intent: Intent) -> str:
+        command = intent.target
+        if not command:
+            return "Usage: tell me which command to run, e.g. 'run python --version'"
+
+        return self.terminal.run(command)
+
+    def _handle_plan(self, intent: Intent) -> str:
+        plan = self.planner.create_plan(intent.raw_message)
+        return f"Here's a plan:\n\n{plan.summary}"
+
+    def _handle_list_issues(self, intent: Intent) -> str:
+        state = intent.target or "open"
+        issues = self.github.list_issues(state=state)
+        if not issues:
+            return "No issues found."
+        if "error" in issues[0]:
+            return issues[0]["error"]
+        return "\n".join(
+            f"#{issue['number']} [{issue['state']}] {issue['title']} ({issue['labels']})"
+            for issue in issues
+        )
+
+    def _handle_list_prs(self, intent: Intent) -> str:
+        state = intent.target or "open"
+        prs = self.github.list_pull_requests(state=state)
+        if not prs:
+            return "No pull requests found."
+        if "error" in prs[0]:
+            return prs[0]["error"]
+        return "\n".join(
+            f"#{pr['number']} [{pr['state']}] {pr['title']} ({pr['branch']})"
+            for pr in prs
+        )
 
     def _handle_search(self, intent: Intent) -> str:
         argument = intent.target
@@ -196,7 +258,7 @@ class CodingAgent:
             return str(error)
 
         action = "Overwritten" if file_exists else "Created"
-        verification = self._verify_file(target_path)
+        verification = self._verify_file(target_path, context)
 
         self.memory.add_file_event(target, action.lower(), content)
 
@@ -266,7 +328,7 @@ class CodingAgent:
         self.memory.add_file_event(target, "modified", new_content)
 
         diff_text = self._compute_diff(current_content, new_content, target)
-        verification = self._verify_file(resolved)
+        verification = self._verify_file(resolved, context)
 
         return (
             f"Modified `{target}`:\n\n"
@@ -290,10 +352,67 @@ class CodingAgent:
         except Exception as error:
             return f"Failed to delete `{target}`: {error}"
 
-    def _verify_file(self, path: Path) -> str:
+    def _verify_file(self, path: Path, context: Optional[AgentContext] = None) -> str:
+        parts = []
         if path.suffix == ".py":
-            return self._verify_python(path)
-        return "File written successfully."
+            parts.append(self._verify_python(path))
+        else:
+            parts.append("File written successfully.")
+
+        if context is not None:
+            project_check = self._run_project_checks(context)
+            if project_check:
+                parts.append(project_check)
+
+        return "\n".join(parts)
+
+    def _run_project_checks(self, context: AgentContext) -> str:
+        checks = []
+
+        if context.has_lint_config:
+            lint_cmd = self._lint_command(context.language)
+            if lint_cmd:
+                checks.append(("lint", lint_cmd, 20))
+
+        if context.has_test_config:
+            test_cmd = self._test_command(context.language)
+            if test_cmd:
+                checks.append(("test", test_cmd, 60))
+
+        if not checks:
+            return ""
+
+        results = []
+        for label, command, timeout in checks:
+            result = self.terminal.run(command, timeout=timeout)
+            passed = result.startswith("Exit code: 0")
+            results.append(f"{'PASS' if passed else 'FAIL'} {label}: {command}")
+
+        return "\n".join(results)
+
+    def _lint_command(self, language: str) -> Optional[str]:
+        if language == "python":
+            return "python3 -m ruff check ."
+        if language == "javascript":
+            return "npx eslint ."
+        if language == "typescript":
+            return "npx eslint ."
+        return None
+
+    def _test_command(self, language: str) -> Optional[str]:
+        if language == "python":
+            return "python3 -m pytest"
+        if language == "javascript":
+            return "npm test"
+        if language == "typescript":
+            return "npm test"
+        if language == "rust":
+            return "cargo test"
+        if language == "go":
+            return "go test ./..."
+        if language == "ruby":
+            return "bundle exec rspec"
+        return None
 
     def _verify_python(self, path: Path) -> str:
         abs_path = path.resolve()

@@ -13,7 +13,11 @@ Implemented:
 5. Diff view on file modifications
 6. Auto-verifier (Python compile check after create/modify)
 7. Relative path resolution for nested files
-8. Initial structure for context, planner, verifier, Git, memory, and GitHub integration
+8. Vector context retrieval (ChromaDB, HNSW + cosine similarity)
+9. Terminal sandbox (safe command execution for run_command)
+10. Git context tool
+11. GitHub integration (list issues / PRs via gh CLI)
+12. Task planner
 
 The current version is intentionally minimal. It gives you a working CLI loop and clean places to add each capability in the recommended build order.
 
@@ -77,7 +81,7 @@ For Groq:
 ```text
 LLM_PROVIDER=groq
 GROQ_API_KEY=your-groq-api-key-here
-CODING_AGENT_INTENT_MODEL=llama-3.1-8b-instant
+CODING_AGENT_INTENT_MODEL=llama-3.3-70b-versatile
 ```
 
 For OpenAI:
@@ -112,26 +116,11 @@ The intent system prompt is stored at:
 coding_agent/prompts/intent_system_prompt.md
 ```
 
-Currently executable: `search_files`, `read_file`, `create_file`, and `modify_code`. `run_command` is detected but not yet executed until the terminal sandbox step is implemented.
+Currently executable: `search_files`, `read_file`, `create_file`, `modify_code`, `delete_file`, `run_command`, `explain`, `plan`, `list_issues`, and `list_prs`.
 
 ## Build Order
 
-Completed:
-
-1. Basic chat interface
-2. File search and file read tools (single + glob)
-3. LLM-backed intent parser (Groq/Gemini/OpenAI)
-4. File editor (create, modify, delete with diff + verification)
-
-Remaining:
-
-5. Context builder
-6. Planner
-7. Terminal sandbox
-8. Verifier
-9. Git context
-10. Memory store
-11. GitHub integration
+All items in the original build order are now implemented. The architecture docs describe the vector context retrieval (`vector-context-architecture.md`) and context builder (`context-builder-architecture.md`).
 
 ## Project Structure
 

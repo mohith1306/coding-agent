@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from .context import AgentContext
-
 
 @dataclass(frozen=True)
 class Plan:
@@ -13,10 +11,10 @@ class Plan:
 
 
 class Planner:
-    def create_plan(self, context: AgentContext) -> Plan:
-        message = context.user_message.lower()
+    def create_plan(self, user_message: str) -> Plan:
+        message = user_message.lower()
 
-        if any(keyword in message for keyword in ("read", "search", "find", "where")):
+        if any(keyword in message for keyword in ("read", "search", "find", "where", "show")):
             return Plan(
                 steps=[
                     "Search the relevant project files.",
@@ -25,13 +23,22 @@ class Planner:
                 ]
             )
 
-        if any(keyword in message for keyword in ("fix", "change", "add", "build", "implement")):
+        if any(keyword in message for keyword in ("fix", "change", "add", "build", "implement", "create", "modify")):
             return Plan(
                 steps=[
                     "Inspect the relevant files.",
                     "Make the smallest correct code change.",
                     "Run verification commands.",
                     "Summarize the changed files and results.",
+                ]
+            )
+
+        if any(keyword in message for keyword in ("run", "test", "build", "lint")):
+            return Plan(
+                steps=[
+                    "Identify the correct command for the project.",
+                    "Run the command in the terminal sandbox.",
+                    "Report the output and any errors.",
                 ]
             )
 
