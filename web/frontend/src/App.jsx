@@ -495,6 +495,9 @@ export default function App() {
                 <strong>{pending.action || "Action"}</strong>
                 {pending.target && <> on <code>{pending.target}</code></>}
               </p>
+              {pending.response && (
+                <pre className="confirm-preview">{pending.response}</pre>
+              )}
               <p className="muted">
                 Proceed? This may modify files in the workspace.
               </p>

@@ -331,6 +331,18 @@ body {
   word-break: break-word;
 }
 
+.confirm-preview {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 8px !important;
+  padding: 10px;
+  background: #14161b;
+  border: 1px solid #26292f;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .muted {
   color: #9ca3af;
   font-size: 13px;
