@@ -87,6 +87,33 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-entry .file-icon {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+.file-entry .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-entry .file-ext {
+  font-size: 10px;
+  text-transform: uppercase;
+  color: #6b7280;
+  background: #1c1f26;
+  border: 1px solid #26292f;
+  border-radius: 4px;
+  padding: 0 4px;
+  flex-shrink: 0;
 }
 
 .file-entry.file {

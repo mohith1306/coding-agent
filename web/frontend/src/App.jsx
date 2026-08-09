@@ -20,10 +20,54 @@ function parseConfirmation(text) {
   };
 }
 
-function FileTree({ node, depth = 0, onSelect, selected }) {
+const FILE_TYPES = {
+  py: { icon: "\u{1F40D}", color: "#3572A5" }, // snake -> python
+  js: { icon: "\u{1F381}", color: "#f1e05a" },
+  jsx: { icon: "\u26A1", color: "#61dafb" },
+  ts: { icon: "\u{1F5C4}\uFE0F", color: "#3178c6" },
+  tsx: { icon: "\u26A1", color: "#61dafb" },
+  json: { icon: "\u{1F4CB}", color: "#cbcb41" },
+  html: { icon: "\u{1F4F1}", color: "#e34c26" },
+  css: { icon: "\u{1F3A8}", color: "#563d7c" },
+  md: { icon: "\u{1F4DD}", color: "#519aba" },
+  txt: { icon: "\u{1F4C4}", color: "#9ca3af" },
+  yml: { icon: "\u2699\uFE0F", color: "#e34c26" },
+  yaml: { icon: "\u2699\uFE0F", color: "#e34c26" },
+  sh: { icon: "\u{1F4F4}", color: "#89e051" },
+  bash: { icon: "\u{1F4F4}", color: "#89e051" },
+  Dockerfile: { icon: "\u{1F6E2}\uFE0F", color: "#2496ed" },
+  env: { icon: "\u{1F512}", color: "#9ca3af" },
+  lock: { icon: "\u{1F512}", color: "#9ca3af" },
+  toml: { icon: "\u2699\uFE0F", color: "#9ca3af" },
+  cfg: { icon: "\u2699\uFE0F", color: "#9ca3af" },
+  ini: { icon: "\u2699\uFE0F", color: "#9ca3af" },
+  gitignore: { icon: "\u{1F511}", color: "#f05033" },
+  csv: { icon: "\u{1F4CA}", color: "#2ea44f" },
+  sql: { icon: "\u{1F4BE}", color: "#e38c00" },
+  zip: { icon: "\u{1F4E6}", color: "#9ca3af" },
+};
+
+const FOLDER_ICON = "\u{1F4C1}";
+const FOLDER_OPEN_ICON = "\u{1F4C2}";
+const FILE_ICON = "\u{1F4C4}";
+
+function fileTypeFor(name) {
+  const lower = name.toLowerCase();
+  if (lower in FILE_TYPES) return lower;
+  const dot = lower.lastIndexOf(".");
+  if (dot > 0 && lower.slice(dot + 1) in FILE_TYPES) {
+    return lower.slice(dot + 1);
+  }
+  return null;
+}
+
+function FileTree({ node, depth = 0, onSelect, selected, open, onToggle }) {
   const indent = { paddingLeft: `${depth * 14 + 8}px` };
   if (node.type === "file") {
     const isSel = selected === node.path;
+    const info = fileTypeFor(node.name);
+    const style = info ? { color: FILE_TYPES[info].color } : null;
+    const icon = info ? FILE_TYPES[info].icon : FILE_ICON;
     return (
       <div
         className={`file-entry file ${isSel ? "selected" : ""}`}
@@ -31,24 +75,39 @@ function FileTree({ node, depth = 0, onSelect, selected }) {
         onClick={() => onSelect(node.path)}
         title={`${node.path} (${node.size} bytes)`}
       >
-        {node.name}
+        <span className="file-icon" style={style}>
+          {icon}
+        </span>
+        <span className="file-name">{node.name}</span>
+        <span className="file-ext">{info ? `.${info}` : ""}</span>
       </div>
     );
   }
+  const isOpen = open.has(node.path);
   return (
     <div>
-      <div className="file-entry dir" style={indent}>
-        {node.name}
+      <div
+        className="file-entry dir"
+        style={indent}
+        onClick={() => onToggle(node.path)}
+      >
+        <span className="file-icon">
+          {isOpen ? FOLDER_OPEN_ICON : FOLDER_ICON}
+        </span>
+        <span className="file-name">{node.name}</span>
       </div>
-      {node.children.map((child, i) => (
-        <FileTree
-          key={`${child.name}-${i}`}
-          node={{ ...child, path: `${node.path}/${child.name}` }}
-          depth={depth + 1}
-          onSelect={onSelect}
-          selected={selected}
-        />
-      ))}
+      {isOpen &&
+        node.children.map((child, i) => (
+          <FileTree
+            key={`${child.name}-${i}`}
+            node={{ ...child, path: `${node.path}/${child.name}` }}
+            depth={depth + 1}
+            onSelect={onSelect}
+            selected={selected}
+            open={open}
+            onToggle={onToggle}
+          />
+        ))}
     </div>
   );
 }
@@ -62,6 +121,7 @@ export default function App() {
   const [tree, setTree] = useState(null);
   const [selected, setSelected] = useState("");
   const [fileContent, setFileContent] = useState("");
+  const [openFolders, setOpenFolders] = useState(() => new Set());
   const endRef = useRef(null);
   const sessionIdRef = useRef(getSessionId());
 
@@ -79,8 +139,32 @@ export default function App() {
     }
   }
 
+  function toggleFolder(path) {
+    setOpenFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }
+
+  function revealPath(path) {
+    const parts = path.split("/");
+    parts.pop();
+    setOpenFolders((prev) => {
+      const next = new Set(prev);
+      let acc = "";
+      for (const part of parts) {
+        acc = acc ? `${acc}/${part}` : part;
+        next.add(acc);
+      }
+      return next;
+    });
+  }
+
   async function loadFile(path) {
     setSelected(path);
+    revealPath(path);
     setFileContent("");
     try {
       const res = await fetch(
@@ -229,6 +313,8 @@ export default function App() {
                   node={{ ...node, path: node.name }}
                   onSelect={loadFile}
                   selected={selected}
+                  open={openFolders}
+                  onToggle={toggleFolder}
                 />
               ))}
             </div>
