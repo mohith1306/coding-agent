@@ -260,3 +260,31 @@ def test_create_non_python_no_confirmation(agent: CodingAgent, workspace: Path) 
     r = agent.handle("create notes.txt")
     assert not r.startswith(CONFIRMATION_MARKER)
     assert (workspace / "notes.txt").read_text() == "hello world"
+
+
+def test_create_files_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
+    targets = ["sliding_window.py", "two_pointers.py", "binary_search.py"]
+    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={"targets": targets})
+    agent.intent_parser.generate = lambda sys_p, user_p: "def run():\n    return 0\n"
+
+    r1 = agent.handle("make separate files for sliding window, two pointers, binary search")
+    assert r1.startswith(CONFIRMATION_MARKER)
+    assert "Action: create_files" in r1
+    assert "sliding_window.py, two_pointers.py, binary_search.py" in r1
+    for name in targets:
+        assert not (workspace / name).exists()
+
+    r2 = agent.handle("make separate files", confirmed=True)
+    assert "Created multiple files" in r2
+    for name in targets:
+        assert (workspace / name).read_text() == "def run():\n    return 0"
+
+
+def test_create_files_infers_targets(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={})
+    agent.intent_parser.generate = lambda sys_p, user_p: "def run():\n    return 0\n"
+
+    agent.handle("make files for sliding window and binary search", confirmed=True)
+    assert (workspace / "sliding_window.py").exists()
+    assert (workspace / "binary_search.py").exists()
+    assert not (workspace / "two_pointers.py").exists()

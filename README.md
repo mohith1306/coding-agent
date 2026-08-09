@@ -8,6 +8,7 @@ A Python CLI coding agent that understands natural-language requests and acts on
 search_files          Search files by glob or natural language
 read_file             Read a file (single path or glob)
 create_file           Create a file (inline content or LLM-generated)
+create_files          Create multiple separate files in one request
 modify_code           Edit a file, show a diff, auto-verify
 delete_file           Delete a file (requires confirmation)
 run_command           Run commands in a terminal sandbox

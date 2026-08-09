@@ -129,6 +129,8 @@ class CodingAgent:
             return self._handle_read(intent)
         if intent.name == "create_file":
             return self._handle_create_file(intent, context, confirmed)
+        if intent.name == "create_files":
+            return self._handle_create_files(intent, context, confirmed)
         if intent.name == "modify_code":
             return self._handle_modify_code(intent, context, confirmed)
         if intent.name == "delete_file":
@@ -518,6 +520,117 @@ class CodingAgent:
         body = f"{preview}\n\n[Output truncated]" if truncated else preview
 
         return f"{action} `{target}`:\n\n{body}\n\n{verification}\n\n{test_output}".strip()
+
+    def _handle_create_files(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
+        targets = []
+        if intent.args and isinstance(intent.args, dict):
+            targets = intent.args.get("targets", []) or []
+        if not targets:
+            targets = self._infer_targets(intent)
+        targets = [str(t).strip() for t in targets if str(t).strip()]
+        if not targets:
+            return "Tell me which files to create, e.g. 'make sliding_window.py, two_pointers.py, and binary_search.py'"
+
+        cached = self._pending_edits
+
+        contents: dict[str, str] = {}
+        for target in targets:
+            if confirmed and target in cached:
+                contents[target] = cached[target]
+                continue
+            generated = self._generate_file_content(target, intent.raw_message, context)
+            if generated:
+                contents[target] = generated
+
+        if not contents:
+            return "I could not generate content for the requested files. Please be more specific."
+
+        if not confirmed:
+            for target, content in contents.items():
+                self._pending_edits[target] = content
+            return self._multi_edit_confirmation_prompt(targets, contents)
+
+        for target in list(cached.keys()):
+            if target not in contents:
+                contents[target] = cached[target]
+
+        parts = []
+        for target in targets:
+            content = contents.get(target)
+            if content is None:
+                continue
+            is_python = target.lower().endswith(".py")
+            target_path = Path(target)
+            try:
+                file_exists = self.file_tools.exists(target_path)
+            except PermissionError:
+                file_exists = False
+
+            try:
+                self.file_tools.write_text(target_path, content)
+            except PermissionError as error:
+                parts.append(str(error))
+                continue
+
+            action = "Overwritten" if file_exists else "Created"
+            resolved_path = (self.root / target).resolve()
+            verification = self.verifier.verify_file(resolved_path, context)
+            test_output = ""
+            if is_python:
+                test_output = self._test_python_file(resolved_path)
+
+            preview = content[:300]
+            truncated = len(content) > len(preview)
+            body = f"{preview}\n\n[Output truncated]" if truncated else preview
+
+            self.memory.add_file_event(target, action.lower(), content)
+            self.memory.add_task(
+                description=f"Create {target}",
+                status="done",
+                files_affected=[target],
+            )
+
+            parts.append(f"{action} `{target}`:\n\n{body}\n\n{verification}\n\n{test_output}".strip())
+
+        for target in targets:
+            self._pending_edits.pop(target, None)
+
+        return "Created multiple files:\n\n" + "\n\n---\n\n".join(parts)
+
+    def _infer_targets(self, intent: Intent) -> list[str]:
+        text = intent.raw_message.lower()
+        targets = []
+        topics = [
+            ("sliding window", "sliding_window.py"),
+            ("two pointers", "two_pointers.py"),
+            ("two pointer", "two_pointers.py"),
+            ("binary search", "binary_search.py"),
+            ("binary-search", "binary_search.py"),
+        ]
+        for phrase, filename in topics:
+            if phrase in text:
+                targets.append(filename)
+        return targets
+
+    def _multi_edit_confirmation_prompt(self, targets: list[str], contents: dict[str, str]) -> str:
+        blocks = []
+        for target in targets:
+            content = contents.get(target, "")
+            lang = "python" if target.endswith(".py") else "text"
+            blocks.append(f"```{lang}\n{content[:1000]}\n```")
+        lines = [
+            CONFIRMATION_MARKER,
+            f"Action: create_files",
+            f"Target: {', '.join(targets)}",
+            f"Reason: create {len(targets)} separate files",
+            "",
+            f"Make these changes?",
+            "",
+            "\n\n".join(blocks),
+            "",
+            "Reply with 'yes' to proceed, or 'no' to cancel.",
+        ]
+        return "\n".join(lines)
 
     def _generate_file_content(self, target: str, raw_message: str, context: Optional[AgentContext] = None) -> str:
         ctx_block = ""
