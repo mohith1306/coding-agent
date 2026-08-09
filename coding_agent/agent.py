@@ -19,6 +19,7 @@ from .verifier import Verifier
 
 CODE_GEN_PROMPT = (Path(__file__).parent / "prompts" / "code_generation_prompt.md")
 REPAIR_PROMPT = (Path(__file__).parent / "prompts" / "repair_prompt.md")
+QUESTION_PROMPT = (Path(__file__).parent / "prompts" / "question_prompt.md")
 
 MAX_REPAIR_ATTEMPTS = 3
 
@@ -168,13 +169,9 @@ class CodingAgent:
         if intent.name == "list_prs":
             return self._handle_list_prs(intent)
         if intent.name == "explain":
-            ctx_str = self.context_builder.format_for_prompt(context) if context else ""
-            parts = [f"Intent detected: explain.\nReason: {intent.reason}"]
-            if ctx_str:
-                parts.append(f"\n{ctx_str}")
-            return "\n".join(parts)
+            return self._handle_question(intent, context)
         if intent.name == "unknown" and intent.reason:
-            return f"I could not parse the intent. {intent.reason}"
+            return self._handle_question(intent, context, fallback=f"I could not parse the intent. {intent.reason}")
         return None
 
     def _handle_run_command(self, intent: Intent) -> str:
@@ -299,17 +296,38 @@ class CodingAgent:
         if passed:
             return f" (repaired after {retries} attempt{plural})"
         return f" (could not repair after {retries} attempt{plural})"
-
     def _handle_plan(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         plan = self.planner.create_plan(intent.raw_message, intent.target)
 
         if not plan.executable or not plan.target:
-            return f"Here's a plan:\n\n{plan.summary}"
+            return self._handle_question(intent, context, planning=True)
 
         if not confirmed:
             return self._plan_confirmation_prompt(plan)
 
         return self._execute_plan(plan, intent, context)
+
+    def _handle_question(
+        self,
+        intent: Intent,
+        context: Optional[AgentContext] = None,
+        planning: bool = False,
+        fallback: str = "",
+    ) -> str:
+        system_prompt = QUESTION_PROMPT.read_text(encoding="utf-8")
+        ctx_block = ""
+        if context:
+            ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
+        header = "The user asked you to plan a feature or project." if planning else "The user asked you a question."
+        user_prompt = f"{header}\n\nUser: {intent.raw_message}{ctx_block}"
+        try:
+            answer = self.intent_parser.generate(system_prompt, user_prompt).strip()
+        except Exception as error:
+            logger.warning("Failed to generate answer: %s", error)
+            return fallback or f"Sorry, I couldn't answer that. {error}"
+        if not answer:
+            return fallback or "I don't have a useful answer for that right now."
+        return answer
 
     def _plan_confirmation_prompt(self, plan) -> str:
         lines = [

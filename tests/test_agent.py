@@ -70,8 +70,8 @@ def agent(workspace: Path, monkeypatch) -> CodingAgent:
     return agent
 
 
-def _intent(name, target="", raw="", confirm=False, args=None):
-    return Intent(name=name, target=target, raw_message=raw, confidence=0.9, requires_confirmation=confirm, args=args or {})
+def _intent(name, target="", raw="", confirm=False, args=None, reason=""):
+    return Intent(name=name, target=target, raw_message=raw, confidence=0.9, requires_confirmation=confirm, args=args or {}, reason=reason)
 
 
 def test_confirmation_required_when_not_confirmed(agent: CodingAgent) -> None:
@@ -173,10 +173,28 @@ def test_plan_executes_modify(agent: CodingAgent, workspace: Path) -> None:
     assert (workspace / "utils.py").read_text() == "print('new')\n"
 
 
-def test_plan_not_executable(agent: CodingAgent) -> None:
+def test_plan_not_executable_answers_via_llm(agent: CodingAgent) -> None:
     agent.intent_parser.parse = lambda msg: _intent("plan", "", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "1. Set up a login form.\n2. Validate credentials."
     response = agent.handle("plan out how to build a login feature")
-    assert response.startswith("Here's a plan")
+    assert "login" in response.lower()
+    assert "form" in response.lower()
+    assert "Here's a plan" not in response
+
+
+def test_explain_answers_via_llm(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "Use React + Flask + SQLite."
+    response = agent.handle("suggest a tech stack")
+    assert "react" in response.lower()
+    assert "Intent detected" not in response
+
+
+def test_unknown_answers_via_llm_with_fallback(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("unknown", raw=msg, reason="Ambiguous request")
+    agent.intent_parser.generate = lambda sys_p, user_p: ""
+    response = agent.handle("some gibberish")
+    assert "could not parse the intent" in response
 
 
 def test_auto_compaction_triggers_in_handle(agent: CodingAgent) -> None:
