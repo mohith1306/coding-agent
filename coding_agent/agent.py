@@ -1,5 +1,6 @@
 import difflib
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +9,7 @@ from .context import AgentContext, ContextBuilder
 from .intent import Intent, IntentParser
 from .memory import MemoryStore
 from .planner import Planner
+from .tools.daytona_sandbox import DaytonaSandbox
 from .tools.files import FileTools
 from .tools.git import GitContext
 from .tools.github import GitHubIntegration
@@ -29,7 +31,7 @@ class CodingAgent:
         self.context_builder = ContextBuilder(self.memory, root=self.root)
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser()
-        self.terminal = TerminalSandbox(self.root)
+        self.terminal = self._build_terminal()
         self.verifier = Verifier(root=self.root, terminal=self.terminal)
         self.git = GitContext(root=self.root)
         self.github = GitHubIntegration(self.root)
@@ -66,6 +68,14 @@ class CodingAgent:
             f"Context: {self.context_builder.format_for_prompt(context)}\n\n"
             "However, I could not determine a specific action to take."
         )
+
+    def _build_terminal(self):
+        if os.getenv("DAYTONA_API_KEY"):
+            try:
+                return DaytonaSandbox(self.root)
+            except Exception as error:
+                logger.warning("Failed to initialize Daytona sandbox, falling back to local: %s", error)
+        return TerminalSandbox(self.root)
 
     def _maybe_compact(self) -> None:
         try:
