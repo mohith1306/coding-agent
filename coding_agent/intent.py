@@ -29,7 +29,12 @@ class IntentParser:
         dotenv_path = Path.cwd() / ".env"
         self._load_dotenv(dotenv_path)
         self.provider = os.getenv("LLM_PROVIDER", "openai").lower().strip()
-        self.model = os.getenv("CODING_AGENT_INTENT_MODEL", self._default_model())
+        self.model = os.getenv(
+            "CODING_AGENT_INTENT_MODEL"
+            if self.provider != "openrouter"
+            else "CODING_AGENT_OPENROUTER_MODEL",
+            self._default_model(),
+        )
         self.api_key = self._api_key_for_provider()
         self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
         self.gemini_model = os.getenv("CODING_AGENT_GEMINI_MODEL", "gemini-2.0-flash")
@@ -147,6 +152,9 @@ class IntentParser:
 
         if self.provider == "groq":
             return self._call_groq_raw(system_prompt, user_message, json_mode)
+
+        if self.provider == "openrouter":
+            return self._call_openrouter_raw(system_prompt, user_message, json_mode, model=self.model, api_key=self.api_key)
 
         raise ValueError(f"Unsupported LLM_PROVIDER: {self.provider}")
 
@@ -351,6 +359,9 @@ class IntentParser:
         if self.provider == "groq":
             return os.getenv("GROQ_API_KEY", "")
 
+        if self.provider == "openrouter":
+            return os.getenv("OPENROUTER_API_KEY", "")
+
         return os.getenv("OPENAI_API_KEY", "")
 
     def _api_key_name(self) -> str:
@@ -360,6 +371,9 @@ class IntentParser:
         if self.provider == "groq":
             return "GROQ_API_KEY"
 
+        if self.provider == "openrouter":
+            return "OPENROUTER_API_KEY"
+
         return "OPENAI_API_KEY"
 
     def _default_model(self) -> str:
@@ -368,6 +382,9 @@ class IntentParser:
 
         if self.provider == "groq":
             return "llama-3.1-8b-instant"
+
+        if self.provider == "openrouter":
+            return "nvidia/nemotron-3-super-120b-a12b:free"
 
         return "gpt-4o-mini"
 

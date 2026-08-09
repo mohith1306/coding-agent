@@ -15,4 +15,4 @@ COPY --from=frontend-build /app/frontend/dist ./web/frontend/dist
 
 ENV PYTHONPATH=/app
 EXPOSE 8000
-CMD ["uvicorn", "web.backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn web.backend.app:app --host 0.0.0.0 --port ${PORT:-8000}"]
