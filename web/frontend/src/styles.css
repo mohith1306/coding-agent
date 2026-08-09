@@ -295,6 +295,11 @@ body {
   color: #fff;
 }
 
+.btn.stop {
+  background: #dc2626;
+  color: #fff;
+}
+
 .btn.run:disabled,
 .btn.save:disabled {
   opacity: 0.5;
@@ -461,6 +466,33 @@ body {
   color: #6b7280;
   font-style: italic;
   align-self: flex-start;
+}
+
+.status-bar {
+  color: #9ca3af;
+  font-size: 12px;
+  align-self: flex-start;
+  font-style: italic;
+}
+
+.msg.streaming pre {
+  display: inline;
+}
+
+.caret {
+  display: inline-block;
+  width: 8px;
+  height: 14px;
+  margin-left: 2px;
+  background: #a7f3d0;
+  vertical-align: text-bottom;
+  animation: blink 1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .input-row {

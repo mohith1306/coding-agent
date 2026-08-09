@@ -1,5 +1,11 @@
+import asyncio
 import io
+import json
 import logging
+import os
+import queue
+import signal
+import subprocess
 import time
 import threading
 import uuid
@@ -17,6 +23,7 @@ from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
+from coding_agent.events import reset_event_sink, set_event_sink
 from coding_agent.memory import MemoryStore
 
 
@@ -65,6 +72,7 @@ WORKSPACES.mkdir(parents=True, exist_ok=True)
 
 _lock = threading.Lock()
 _sessions: dict[str, tuple[CodingAgent, MemoryStore]] = {}
+_running_procs: dict[str, subprocess.Popen] = {}
 
 
 class ChatRequest(BaseModel):
@@ -170,24 +178,84 @@ def delete_workspace_file(session_id: str, file_path: str):
 
 
 @app.post("/api/sessions/{session_id}/run")
-def run_python_file(session_id: str, request: RunFileRequest):
+async def run_python_file_stream(session_id: str, request: RunFileRequest):
     target = _resolve_workspace_path(session_id, request.file_path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="File not found.")
     if target.suffix != ".py":
         raise HTTPException(status_code=400, detail="Only Python files can be executed for now.")
 
-    agent, _ = _get_agent(session_id)
-    logger.info("Running %s (session %s)", request.file_path, session_id)
+    with _lock:
+        if session_id in _running_procs:
+            raise HTTPException(status_code=409, detail="A process is already running in this session.")
+
+    logger.info("Running %s (stream, session %s)", request.file_path, session_id)
+    events: queue.Queue = queue.Queue(maxsize=2000)
+
+    def worker() -> None:
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                ["python3", str(target)],
+                cwd=target.parent,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                start_new_session=True,
+            )
+            with _lock:
+                _running_procs[session_id] = proc
+            for raw in proc.stdout:
+                _queue_put(events, {"type": "output", "text": raw})
+        except Exception as error:
+            logger.exception("Run failed for session %s", session_id)
+            _queue_put(events, {"type": "error", "message": str(error)})
+        finally:
+            if proc is not None:
+                try:
+                    exit_code = proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    exit_code = proc.wait()
+            else:
+                exit_code = -1
+            with _lock:
+                _running_procs.pop(session_id, None)
+            _queue_put(events, {"type": "exit", "code": exit_code})
+            _queue_put(events, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return _sse_response(events)
+
+
+@app.post("/api/sessions/{session_id}/stop")
+def stop_run(session_id: str):
+    with _lock:
+        proc = _running_procs.pop(session_id, None)
+    if proc is None or proc.poll() is not None:
+        return {"stopped": False}
+
+    logger.info("Stopping process for session %s", session_id)
     try:
-        workspace = (WORKSPACES / session_id).resolve()
-        relative = str(target.relative_to(workspace))
-        result = agent.terminal.run(f"python3 {relative}", timeout=60)
-    except Exception as error:
-        logger.exception("Run failed for session %s", session_id)
-        raise HTTPException(status_code=500, detail=str(error))
-    logger.info("Run %s finished (session %s)", request.file_path, session_id)
-    return {"path": request.file_path, "result": result}
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    return {"stopped": True}
 
 
 @app.get("/api/sessions/{session_id}/download")
@@ -244,6 +312,62 @@ def chat(request: ChatRequest) -> ChatResponse:
         session_id=session_id,
         response=response_text,
         requires_confirmation=False,
+    )
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    agent, session_id = _get_agent(request.session_id)
+    flag = "confirmed" if request.confirmed else "unconfirmed"
+    logger.info("Chat stream [%s] session=%s: %.200s", flag, session_id, request.message)
+    events: queue.Queue = queue.Queue()
+
+    def worker() -> None:
+        token = set_event_sink(events.put)
+        try:
+            response_text = agent.handle(request.message, confirmed=request.confirmed)
+            if response_text.startswith(CONFIRMATION_MARKER):
+                action, target = _parse_confirmation(response_text)
+                events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
+            else:
+                events.put({"type": "done", "response": response_text})
+        except Exception as error:
+            logger.exception("Agent stream failed for session %s", session_id)
+            events.put({"type": "error", "message": str(error)})
+        finally:
+            reset_event_sink(token)
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return _sse_response(events)
+
+
+def _queue_put(events: queue.Queue, item: Optional[dict]) -> None:
+    try:
+        events.put_nowait(item)
+    except queue.Full:
+        pass
+
+
+def _sse_response(events: queue.Queue) -> StreamingResponse:
+    async def event_generator():
+        while True:
+            try:
+                item = await asyncio.to_thread(events.get, True, 0.25)
+            except queue.Empty:
+                continue
+            if item is None:
+                break
+            yield f"data: {json.dumps(item)}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

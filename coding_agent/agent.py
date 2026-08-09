@@ -7,6 +7,7 @@ from typing import Optional
 
 from .compaction import CompactionManager
 from .context import AgentContext, ContextBuilder
+from .events import emit, sink_active
 from .intent import Intent, IntentParser
 from .memory import MemoryStore
 from .planner import Planner
@@ -48,8 +49,11 @@ class CodingAgent:
             summary_key="compaction_summary",
         )
         self._pending_edits: dict[str, str] = {}
+        self._pending_intents: dict[str, Intent] = {}
+        self._pending_project_targets: dict[str, list[str]] = {}
 
     def handle(self, user_message: str, confirmed: bool = False) -> str:
+        emit({"type": "phase", "message": "Parsing your request…"})
         intent = self.intent_parser.parse(user_message)
         logger.info(
             "Intent: %s target=%r confidence=%s confirmed=%s",
@@ -59,10 +63,22 @@ class CodingAgent:
             confirmed,
         )
 
+        if confirmed and intent.name == "unknown" and "Intent parser failed" in intent.reason:
+            pending = self._pending_intents.pop(user_message, None)
+            if pending is not None:
+                logger.warning(
+                    "Confirmed request parse failed; replaying pending intent %s",
+                    pending.name,
+                )
+                intent = pending
+
         if intent.requires_confirmation and not confirmed:
             logger.info("Intent %s requires confirmation; asking user", intent.name)
+            self._pending_intents[user_message] = intent
             return self._confirmation_prompt(intent)
 
+        emit({"type": "intent", "name": intent.name, "target": intent.target or ""})
+        emit({"type": "phase", "message": f"Performing {intent.name}…"})
         context = self.context_builder.build(user_message)
         tool_response = self._handle_intent(intent, context, confirmed=confirmed)
         logger.info("Intent %s handled (confirmed=%s)", intent.name, confirmed)
@@ -185,8 +201,10 @@ class CodingAgent:
 
         file_command = self._resolve_run_file(command)
         if file_command:
+            emit({"type": "phase", "message": f"Running `{file_command}`…"})
             return self.terminal.run(file_command)
 
+        emit({"type": "phase", "message": f"Running `{command}`…"})
         return self.terminal.run(command)
 
     def _resolve_run_file(self, command: str) -> Optional[str]:
@@ -251,12 +269,15 @@ class CodingAgent:
         attempts = 0
         rel = str(resolved_path.relative_to(self.root)) if self.root in resolved_path.parents else str(resolved_path)
         while True:
+            emit({"type": "phase", "message": f"Writing {rel}…"})
             self.file_tools.write_text(resolved_path, current)
+            emit({"type": "phase", "message": f"Verifying {rel}…"})
             verification = self.verifier.verify_file(resolved_path, context)
             compile_ok = "compiles clean" in verification
             test_output = ""
             if resolved_path.suffix == ".py":
                 if compile_ok:
+                    emit({"type": "phase", "message": f"Testing {rel}…"})
                     test_output = self._test_python_file(resolved_path)
                 else:
                     test_output = ""
@@ -283,6 +304,7 @@ class CodingAgent:
             if test_output:
                 error_detail = f"{verification}\n{test_output}"
             attempts += 1
+            emit({"type": "phase", "message": f"Repairing {rel}… (attempt {attempts}/{max_retries})"})
             logger.info("Repair attempt %d/%d for %s", attempts, max_retries, rel)
             repaired = self._repair_python_file(resolved_path, current, error_detail, context)
             if not repaired or repaired == current:
@@ -338,11 +360,19 @@ class CodingAgent:
             ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
         header = "The user asked you to plan a feature or project." if planning else "The user asked you a question."
         user_prompt = f"{header}\n\nUser: {intent.raw_message}{ctx_block}"
+        parts: list[str] = []
         try:
-            answer = self.intent_parser.generate(system_prompt, user_prompt).strip()
+            if sink_active():
+                for token in self.intent_parser.stream(system_prompt, user_prompt):
+                    if token:
+                        parts.append(token)
+                        emit({"type": "chunk", "text": token})
+            else:
+                parts.append(self.intent_parser.generate(system_prompt, user_prompt))
         except Exception as error:
             logger.warning("Failed to generate answer: %s", error)
             return fallback or f"Sorry, I couldn't answer that. {error}"
+        answer = "".join(parts).strip()
         if not answer:
             return fallback or "I don't have a useful answer for that right now."
         return answer
@@ -553,6 +583,24 @@ class CodingAgent:
 
         return "\n\n---\n\n".join(parts)
 
+    def _canonical_path(self, candidate: Path) -> Optional[Path]:
+        try:
+            rel = candidate.relative_to(self.root)
+        except ValueError:
+            return candidate if candidate.exists() else None
+
+        current = self.root
+        for part in rel.parts:
+            try:
+                entries = [e for e in os.listdir(current) if e.lower() == part.lower()]
+            except OSError:
+                return None
+            if len(entries) == 1:
+                current = current / entries[0]
+            else:
+                return None
+        return current if current.exists() else None
+
     def _resolve_path(self, path_str: str) -> Optional[Path]:
         candidate = Path(path_str)
         if candidate.is_absolute():
@@ -560,16 +608,13 @@ class CodingAgent:
         else:
             candidate = (self.root / path_str).resolve()
 
-        try:
-            if self.file_tools.exists(candidate):
-                return candidate if candidate.is_file() else None
-        except PermissionError:
-            pass
+        canonical = self._canonical_path(candidate)
+        if canonical is not None and canonical.is_file():
+            return canonical
 
-        name = candidate.name
-        matches = sorted(self.root.rglob(name))
-        for m in matches:
-            if m.is_file():
+        folded = candidate.name.lower()
+        for m in sorted(self.root.rglob("*")):
+            if m.is_file() and m.name.lower() == folded:
                 try:
                     resolved = m.resolve()
                     if self.file_tools.exists(resolved):
@@ -739,7 +784,13 @@ class CodingAgent:
         return [str(f).strip() for f in files if str(f).strip()]
 
     def _handle_create_project(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
-        targets = self._generate_project_targets(intent.raw_message, context)
+        emit({"type": "phase", "message": "Planning project structure…"})
+        if confirmed:
+            targets = self._pending_project_targets.get(intent.raw_message) or self._generate_project_targets(intent.raw_message, context)
+        else:
+            targets = self._generate_project_targets(intent.raw_message, context)
+            if targets:
+                self._pending_project_targets[intent.raw_message] = targets
         if not targets:
             return "I could not figure out a file structure for that project. Please name the tech stack or files you want."
 
@@ -886,6 +937,7 @@ class CodingAgent:
             f"{ctx_block}"
         )
         try:
+            emit({"type": "phase", "message": f"Generating {target}…"})
             result = self.intent_parser.generate(system_prompt, raw_message)
             return self._strip_code_fences(result).strip()
         except Exception:
@@ -921,6 +973,7 @@ class CodingAgent:
         if confirmed and cached:
             new_content = cached
         else:
+            emit({"type": "phase", "message": f"Generating changes for {target}…"})
             try:
                 new_content = self._strip_code_fences(self.intent_parser.generate(system_prompt, user_prompt))
             except Exception as error:
@@ -955,18 +1008,23 @@ class CodingAgent:
 
         retry_note = self._retry_note(verification, test_output, retries)
 
-        self.memory.add_file_event(target, "modified", new_content)
+        try:
+            display = str(resolved.relative_to(self.root))
+        except ValueError:
+            display = target
+
+        self.memory.add_file_event(display, "modified", new_content)
         self.memory.add_task(
-            description=f"Modify {target}",
+            description=f"Modify {display}",
             status="done",
-            files_affected=[target],
+            files_affected=[display],
         )
 
         if new_content.strip() != current_content.strip():
-            diff_text = self._compute_diff(current_content, new_content, target)
+            diff_text = self._compute_diff(current_content, new_content, display)
 
         return (
-            f"Modified `{target}`{retry_note}:\n\n"
+            f"Modified `{display}`{retry_note}:\n\n"
             f"```diff\n{diff_text}\n```\n\n"
             f"{verification}\n\n"
             f"{test_output}"
@@ -983,13 +1041,17 @@ class CodingAgent:
 
         try:
             resolved.unlink()
-            self.memory.add_file_event(target, "deleted")
+            try:
+                display = str(resolved.relative_to(self.root))
+            except ValueError:
+                display = target
+            self.memory.add_file_event(display, "deleted")
             self.memory.add_task(
-                description=f"Delete {target}",
+                description=f"Delete {display}",
                 status="done",
-                files_affected=[target],
+                files_affected=[display],
             )
-            return f"Deleted `{target}`."
+            return f"Deleted `{display}`."
         except Exception as error:
             return f"Failed to delete `{target}`: {error}"
 

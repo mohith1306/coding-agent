@@ -90,6 +90,21 @@ def test_delete_confirmed(agent: CodingAgent, workspace: Path) -> None:
     assert agent.memory.tasks[-1]["metadata"]["status"] == "done"
 
 
+def test_confirmed_replays_cached_intent_when_reparse_fails(agent: CodingAgent, workspace: Path) -> None:
+    (workspace / "x.txt").write_text("data")
+
+    def parse(msg: str):
+        if agent._pending_intents.get(msg):
+            return _intent("unknown", reason="Intent parser failed: HTTP Error 429")
+        return _intent("delete_file", "x.txt", raw=msg, confirm=True)
+
+    agent.intent_parser.parse = parse
+    agent.handle("delete x.txt")
+    response = agent.handle("delete x.txt", confirmed=True)
+    assert "Deleted" in response
+    assert not (workspace / "x.txt").exists()
+
+
 def test_resolve_run_file_py(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "dfs.py").write_text("print(1)")
     resolved = agent._resolve_run_file("dfs")
@@ -104,6 +119,22 @@ def test_resolve_run_file_exact(agent: CodingAgent, workspace: Path) -> None:
 
 def test_resolve_run_file_missing(agent: CodingAgent, workspace: Path) -> None:
     assert agent._resolve_run_file("nope") is None
+
+
+def test_resolve_path_case_insensitive(agent: CodingAgent, workspace: Path) -> None:
+    (workspace / "README.md").write_text("# To-do app")
+    resolved = agent._resolve_path("readme.md")
+    assert resolved is not None
+    assert resolved.name == "README.md"
+    assert resolved == (workspace / "README.md").resolve()
+
+
+def test_resolve_path_case_insensitive_delete(agent: CodingAgent, workspace: Path) -> None:
+    (workspace / "ARCHITECTURE.MD").write_text("# Arch")
+    agent.intent_parser.parse = lambda msg: _intent("delete_file", "architecture.md", raw=msg, confirm=True)
+    response = agent.handle("delete architecture.md", confirmed=True)
+    assert "Deleted" in response
+    assert not (workspace / "ARCHITECTURE.MD").exists()
 
 
 def test_commit_message_from_target(agent: CodingAgent) -> None:

@@ -11,6 +11,7 @@ function makeTab(id = crypto.randomUUID(), title = "New session") {
     messages: [],
     pending: null,
     busy: false,
+    status: "",
     tree: null,
     selected: "",
     fileContent: "",
@@ -41,13 +42,30 @@ function loadTabs() {
   return [makeTab()];
 }
 
-function parseConfirmation(text) {
-  const actionMatch = text.match(/Action:\s*(.+)/);
-  const targetMatch = text.match(/Target:\s*(.+)/);
-  return {
-    action: actionMatch ? actionMatch[1].trim() : "",
-    target: targetMatch ? targetMatch[1].trim() : "",
-  };
+async function readSSE(res, onEvent) {
+  if (!res.body) return;
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, idx);
+      buf = buf.slice(idx + 2);
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("data: ")) {
+          try {
+            onEvent(JSON.parse(line.slice(6)));
+          } catch {
+            // ignore malformed frames
+          }
+        }
+      }
+    }
+  }
 }
 
 const FILE_TYPES = {
@@ -157,6 +175,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const endRef = useRef(null);
+  const runOutputRef = useRef(null);
   const activeIdRef = useRef(null);
 
   const safeIndex = Math.min(activeTab, Math.max(tabs.length - 1, 0));
@@ -166,6 +185,7 @@ export default function App() {
   useEffect(() => {
     const saved = tabs.map((t) => ({
       ...t,
+      status: "",
       messages: (t.messages || []).slice(-200),
       openFolders: [...(t.openFolders || [])],
     }));
@@ -179,6 +199,11 @@ export default function App() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [tab.messages, tab.pending]);
+
+  useEffect(() => {
+    const el = runOutputRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [tab.runResult]);
 
   useEffect(() => {
     refreshFiles();
@@ -327,21 +352,59 @@ export default function App() {
     const selected = tab.selected;
     if (!selected) return;
     patchTab(id, { running: true, runResult: "" });
+    const updateOutput = (text) =>
+      setTabs((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, runResult: text } : t))
+      );
     try {
       const res = await fetch(`/api/sessions/${id}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ file_path: selected }),
       });
-      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Run failed");
       }
-      patchTab(id, { runResult: data.result });
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("text/event-stream")) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.result || data.detail || "Unexpected run response");
+      }
+      let acc = "";
+      await readSSE(res, (event) => {
+        if (event.type === "output") {
+          acc += event.text;
+          updateOutput(acc);
+        } else if (event.type === "exit") {
+          const statusLine =
+            event.code === 0
+              ? "[exited successfully]"
+              : `[process exited with code ${event.code}]`;
+          acc = acc.trim().length
+            ? `${acc.replace(/\s+$/, "")}\n\n${statusLine}`
+            : `(no output)\n${statusLine}`;
+          updateOutput(acc);
+        } else if (event.type === "error") {
+          acc += `\n[error] ${event.message}`;
+          updateOutput(acc);
+        }
+      });
     } catch (error) {
       patchTab(id, { runResult: `Error: ${error.message}` });
     } finally {
       patchTab(id, { running: false });
+    }
+  }
+
+  async function stopRun() {
+    const id = activeIdRef.current;
+    const prefix = tab.runResult ? `${tab.runResult}\n` : "";
+    patchTab(id, { runResult: `${prefix}[stopping…]` });
+    try {
+      await fetch(`/api/sessions/${id}/stop`, { method: "POST" });
+    } catch {
+      // the stream may have already finished
     }
   }
 
@@ -404,18 +467,38 @@ export default function App() {
   async function send(text, confirmed = false) {
     const id = activeIdRef.current;
     const currentMessages = tab.messages || [];
-    patchTab(id, { busy: true, pending: null });
+    patchTab(id, { busy: true, pending: null, status: "Connecting…" });
 
     if (!confirmed) {
-      const newMessages = [...currentMessages, { role: "user", text }];
-      patchTab(id, { messages: newMessages });
       if ((tab.title || "").startsWith("New session")) {
         patchTab(id, { title: text.slice(0, 24) || "New session" });
       }
     }
 
+    const baseMessages = confirmed
+      ? currentMessages
+      : [...currentMessages, { role: "user", text }];
+    const liveIndex = baseMessages.length;
+    patchTab(id, {
+      messages: [...baseMessages, { role: "agent", text: "", streaming: true }],
+    });
+
+    const updateLive = (updater) =>
+      setTabs((prev) =>
+        prev.map((t) =>
+          t.id !== id
+            ? t
+            : {
+                ...t,
+                messages: t.messages.map((m, i) =>
+                  i === liveIndex ? updater(m) : m
+                ),
+              }
+        )
+      );
+
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -424,45 +507,46 @@ export default function App() {
           confirmed,
         }),
       });
-
-      const data = await res.json();
       if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
         throw new Error(data.detail || "Request failed");
       }
 
-      if (data.requires_confirmation) {
-        const parsed = parseConfirmation(data.response);
-        patchTab(id, {
-          pending: {
-            message: text,
-            action: parsed.action,
-            target: parsed.target,
-            response: data.response,
-          },
-          busy: false,
-        });
-        return;
-      }
-
-      patchTab(id, {
-        messages: [
-          ...currentMessages,
-          ...(confirmed ? [] : [{ role: "user", text }]),
-          { role: "agent", text: data.response },
-        ],
-        busy: false,
+      await readSSE(res, (event) => {
+        if (event.type === "chunk") {
+          updateLive((m) => ({ ...m, text: (m.text || "") + event.text }));
+        } else if (event.type === "phase") {
+          patchTab(id, { status: event.message });
+        } else if (event.type === "confirmation") {
+          setTabs((prev) =>
+            prev.map((t) =>
+              t.id !== id
+                ? t
+                : {
+                    ...t,
+                    messages: t.messages.slice(0, liveIndex),
+                    pending: {
+                      message: text,
+                      action: event.action,
+                      target: event.target,
+                      response: event.response,
+                    },
+                    status: "",
+                  }
+            )
+          );
+        } else if (event.type === "done") {
+          updateLive(() => ({ role: "agent", text: event.response }));
+          patchTab(id, { status: "" });
+        } else if (event.type === "error") {
+          updateLive(() => ({ role: "agent", text: `Error: ${event.message}` }));
+          patchTab(id, { status: "" });
+        }
       });
     } catch (error) {
-      patchTab(id, {
-        messages: [
-          ...currentMessages,
-          ...(confirmed ? [] : [{ role: "user", text }]),
-          { role: "agent", text: `Error: ${error.message}` },
-        ],
-        busy: false,
-      });
+      updateLive(() => ({ role: "agent", text: `Error: ${error.message}` }));
     } finally {
-      patchTab(id, { busy: false });
+      patchTab(id, { busy: false, status: "" });
       refreshFiles();
     }
   }
@@ -563,20 +647,29 @@ export default function App() {
               <div className="editor-toolbar">
                 <span className="file-preview-name">{tab.selected}</span>
                 <div className="editor-actions">
-                  {tab.selected.endsWith(".py") && (
-                    <button
-                      onClick={runFile}
-                      className="btn run"
-                      disabled={tab.running || tab.dirty}
-                      title={
-                        tab.dirty
-                          ? "Save changes before running"
-                          : "Run in sandbox (Python only)"
-                      }
-                    >
-                      {tab.running ? "Running…" : "Run"}
-                    </button>
-                  )}
+                  {tab.selected.endsWith(".py") &&
+                    (tab.running ? (
+                      <button
+                        onClick={stopRun}
+                        className="btn stop"
+                        title="Stop the running process"
+                      >
+                        Stop
+                      </button>
+                    ) : (
+                      <button
+                        onClick={runFile}
+                        className="btn run"
+                        disabled={tab.dirty}
+                        title={
+                          tab.dirty
+                            ? "Save changes before running"
+                            : "Run in sandbox (Python only)"
+                        }
+                      >
+                        Run
+                      </button>
+                    ))}
                   <button
                     onClick={saveFile}
                     className="btn save"
@@ -602,10 +695,12 @@ export default function App() {
                 autoCapitalize="off"
                 autoCorrect="off"
               />
-              {tab.runResult && (
+              {(tab.runResult || tab.running) && (
                 <div className="run-output">
-                  <div className="run-output-title">Output</div>
-                  <pre>{tab.runResult}</pre>
+                  <div className="run-output-title">
+                    {tab.running ? "Running…" : "Output"}
+                  </div>
+                  <pre ref={runOutputRef}>{tab.runResult || ""}</pre>
                 </div>
               )}
             </div>
@@ -621,8 +716,14 @@ export default function App() {
             </div>
           )}
           {tab.messages.map((msg, i) => (
-            <div key={i} className={`msg ${msg.role}`}>
-              <pre>{msg.text}</pre>
+            <div
+              key={i}
+              className={`msg ${msg.role}${msg.streaming ? " streaming" : ""}`}
+            >
+              <pre>
+                {msg.text}
+                {msg.streaming && <span className="caret" />}
+              </pre>
             </div>
           ))}
 
@@ -648,7 +749,10 @@ export default function App() {
               </div>
             </div>
           )}
-          {tab.busy && !tab.pending && <div className="typing">Agent is thinking…</div>}
+          {tab.busy && !tab.pending && !tab.status && (
+            <div className="typing">Agent is thinking…</div>
+          )}
+          {tab.status && <div className="status-bar">{tab.status}</div>}
           <div ref={endRef} />
         </div>
 

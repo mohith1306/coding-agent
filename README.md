@@ -49,7 +49,7 @@ There is also a **web app** (FastAPI backend + React frontend) that wraps the ag
    CHROMA_API_KEY=your-api-key
    ```
 
-   Supported providers: `groq`, `gemini`, `openai` (see `intent.py` for the matching `*_API_KEY` and model names).
+   Supported providers: `groq`, `gemini`, `openai`, `openrouter`, `deepseek` (see `intent.py` for the matching `*_API_KEY` and model names). DeepSeek is OpenAI-compatible and cheap — set `LLM_PROVIDER=deepseek` with `DEEPSEEK_API_KEY`. Free models (e.g. `*-:free` on OpenRouter, `gemini-2.0-flash`) work as primary or fallback tiers.
 
 3. Run:
 
