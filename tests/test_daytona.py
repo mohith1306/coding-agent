@@ -47,11 +47,10 @@ class FakeMemory:
         return []
 
 
-def test_daytona_requires_key(tmp_path: Path) -> None:
-    with patch.dict(sys.modules, {"daytona": MagicMock()}), patch.dict("os.environ", {}, clear=False):
-        import os
-
-        os.environ.pop("DAYTONA_API_KEY", None)
+def test_daytona_requires_key(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    with patch.dict(sys.modules, {"daytona": MagicMock()}):
         with pytest.raises(RuntimeError):
             DaytonaSandbox(tmp_path)
 
@@ -72,6 +71,7 @@ def test_agent_uses_daytona_when_key_present(tmp_path: Path, monkeypatch) -> Non
 
 def test_agent_uses_local_without_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
     agent = CodingAgent(memory=FakeMemory(), root=tmp_path)
     assert isinstance(agent.terminal, TerminalSandbox)
 

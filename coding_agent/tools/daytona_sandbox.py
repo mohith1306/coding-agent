@@ -39,6 +39,7 @@ class DaytonaSandbox:
         self._uploaded: dict[str, tuple[int, int]] = {}
         self._max_output_chars = max_output_chars
         self._load_dotenv(self.root / ".env")
+        self._load_dotenv(Path.cwd() / ".env")
         if not api_key and not os.getenv("DAYTONA_API_KEY"):
             raise RuntimeError("DAYTONA_API_KEY is not set")
         try:
