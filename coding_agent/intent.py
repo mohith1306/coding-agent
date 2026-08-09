@@ -31,6 +31,13 @@ class IntentParser:
         self.provider = os.getenv("LLM_PROVIDER", "openai").lower().strip()
         self.model = os.getenv("CODING_AGENT_INTENT_MODEL", self._default_model())
         self.api_key = self._api_key_for_provider()
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        self.gemini_model = os.getenv("CODING_AGENT_GEMINI_MODEL", "gemini-2.0-flash")
+        self.gemini_fallback = (
+            self.provider != "gemini"
+            and bool(self.gemini_api_key)
+            and self.gemini_api_key not in {"your-gemini-api-key-here", ""}
+        )
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)
 
@@ -86,6 +93,26 @@ class IntentParser:
         return parsed
 
     def _call_llm_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        try:
+            return self._call_primary_raw(system_prompt, user_message, json_mode)
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as error:
+            if not self.gemini_fallback:
+                raise
+            logger.warning(
+                "Primary provider %s failed (%s); falling back to Gemini %s",
+                self.provider,
+                self._safe_error_message(error),
+                self.gemini_model,
+            )
+            return self._call_gemini_raw(
+                system_prompt,
+                user_message,
+                json_mode,
+                model=self.gemini_model,
+                api_key=self.gemini_api_key,
+            )
+
+    def _call_primary_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
         if self.provider == "gemini":
             return self._call_gemini_raw(system_prompt, user_message, json_mode)
 
@@ -181,8 +208,10 @@ class IntentParser:
 
         return parsed
 
-    def _call_gemini_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
-        logger.info("Calling Gemini with model %s", self.model)
+    def _call_gemini_raw(self, system_prompt: str, user_message: str, json_mode: bool = False, model: Optional[str] = None, api_key: Optional[str] = None) -> str:
+        model = model or self.model
+        api_key = api_key or self.api_key
+        logger.info("Calling Gemini with model %s", model)
         payload: dict[str, object] = {
             "system_instruction": {
                 "parts": [{"text": system_prompt}],
@@ -200,7 +229,7 @@ class IntentParser:
         if json_mode:
             payload["generationConfig"]["response_mime_type"] = "application/json"  # type: ignore[attr-defined]
         request = Request(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -234,6 +263,8 @@ class IntentParser:
     def _log_configuration(self, dotenv_path: Path) -> None:
         logger.info("Intent parser provider: %s", self.provider)
         logger.info("Intent parser model: %s", self.model)
+        if self.gemini_fallback:
+            logger.info("Gemini fallback enabled (model %s)", self.gemini_model)
 
         if not dotenv_path.is_file():
             logger.warning("%s not loaded because .env is missing", self._api_key_name())
@@ -278,7 +309,15 @@ class IntentParser:
 
     def _safe_error_message(self, error: Exception) -> str:
         if isinstance(error, HTTPError):
-            body = error.read().decode("utf-8", errors="replace")
-            return f"HTTP Error {error.code}: {body}"
+            try:
+                body = error.read().decode("utf-8", errors="replace")
+                return f"HTTP Error {error.code}: {body}"
+            except Exception:
+                return f"HTTP Error {error.code}"
+            finally:
+                try:
+                    error.close()
+                except Exception:
+                    pass
 
         return str(error)
