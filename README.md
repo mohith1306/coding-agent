@@ -20,7 +20,7 @@ list_prs              List GitHub pull requests
 explain               Explain the detected intent
 ```
 
-Context is retrieved semantically from a ChromaDB vector store (HNSW + cosine similarity) and injected into LLM calls. Risky operations (delete, install, commit, push) always require confirmation.
+Context is retrieved semantically from a ChromaDB vector store (HNSW + cosine similarity) and injected into LLM calls. Risky operations (delete, install, commit, push) always require confirmation. Creating or modifying **Python** files also requires confirmation first — the agent shows the proposed content or diff and asks "yes/no" (like Claude Code). After an approved change, the file is run in the terminal sandbox (remote Daytona sandbox when `DAYTONA_API_KEY` is set) and the result is reported as `[PASS]` or `[FAIL]`.
 
 There is also a **web app** (FastAPI backend + React frontend) that wraps the agent with a chat UI. See [Web App](#web-app) below.
 

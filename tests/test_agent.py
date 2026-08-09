@@ -201,3 +201,62 @@ def test_auto_compaction_noop_under_budget(agent: CodingAgent) -> None:
 
     assert len(agent.memory.turns) == 3
     assert agent.memory.get_preference("compaction_summary") is None
+
+
+def test_create_python_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_file", "hello.py", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
+
+    r1 = agent.handle("create hello.py")
+    assert r1.startswith(CONFIRMATION_MARKER)
+    assert "Make this change to `hello.py`?" in r1
+    assert "print('hello')" in r1
+    assert not (workspace / "hello.py").exists()
+
+    r2 = agent.handle("create hello.py", confirmed=True)
+    assert "Created" in r2
+    assert (workspace / "hello.py").read_text() == "print('hello')"
+
+
+def test_modify_python_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
+    (workspace / "utils.py").write_text("print('old')\n")
+    agent.intent_parser.parse = lambda msg: _intent("modify_code", "utils.py", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "print('new')\n"
+
+    r1 = agent.handle("update utils.py")
+    assert r1.startswith(CONFIRMATION_MARKER)
+    assert "Make this change to `utils.py`?" in r1
+    assert "-print('old')" in r1
+    assert (workspace / "utils.py").read_text() == "print('old')\n"
+
+    r2 = agent.handle("update utils.py", confirmed=True)
+    assert "Modified" in r2
+    assert (workspace / "utils.py").read_text() == "print('new')\n"
+
+
+def test_create_python_runs_sandbox_test(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_file", "hello.py", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
+
+    agent.terminal = agent._build_terminal()
+    captured = {}
+
+    def fake_run(command, timeout=30):
+        captured["command"] = command
+        return "Exit code: 0\nhello\n"
+
+    agent.terminal.run = fake_run
+
+    agent.handle("create hello.py")
+    r2 = agent.handle("create hello.py", confirmed=True)
+    assert "Sandbox test: [PASS]" in r2
+    assert captured.get("command") == "python3 hello.py"
+
+
+def test_create_non_python_no_confirmation(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_file", "notes.txt", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "hello world"
+
+    r = agent.handle("create notes.txt")
+    assert not r.startswith(CONFIRMATION_MARKER)
+    assert (workspace / "notes.txt").read_text() == "hello world"

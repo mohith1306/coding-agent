@@ -41,6 +41,7 @@ class CodingAgent:
             generate=self._generate_summary,
             summary_key="compaction_summary",
         )
+        self._pending_edits: dict[str, str] = {}
 
     def handle(self, user_message: str, confirmed: bool = False) -> str:
         intent = self.intent_parser.parse(user_message)
@@ -103,15 +104,33 @@ class CodingAgent:
         ]
         return "\n".join(lines)
 
+    def _edit_confirmation_prompt(self, action: str, target: str, reason: str, preview: str, language: str = "python") -> str:
+        preview = preview[:2000]
+        lines = [
+            CONFIRMATION_MARKER,
+            f"Action: {action}",
+            f"Target: {target}",
+            f"Reason: {reason}",
+            "",
+            f"Make this change to `{target}`?",
+            "",
+            f"```{language}",
+            preview,
+            "```",
+            "",
+            "Reply with 'yes' to proceed, or 'no' to cancel.",
+        ]
+        return "\n".join(lines)
+
     def _handle_intent(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> Optional[str]:
         if intent.name == "search_files":
             return self._handle_search(intent)
         if intent.name == "read_file":
             return self._handle_read(intent)
         if intent.name == "create_file":
-            return self._handle_create_file(intent, context)
+            return self._handle_create_file(intent, context, confirmed)
         if intent.name == "modify_code":
-            return self._handle_modify_code(intent, context)
+            return self._handle_modify_code(intent, context, confirmed)
         if intent.name == "delete_file":
             return self._handle_delete_file(intent)
         if intent.name == "run_command":
@@ -176,6 +195,16 @@ class CodingAgent:
                     continue
         return None
 
+    def _test_python_file(self, path: Path) -> str:
+        try:
+            rel = str(path.resolve().relative_to(self.root))
+        except ValueError:
+            rel = str(path)
+        result = self.terminal.run(f"python3 {rel}", timeout=30)
+        passed = result.startswith("Exit code: 0")
+        label = "PASS" if passed else "FAIL"
+        return f"Sandbox test: [{label}] python3 {rel}\n{result}"
+
     def _handle_plan(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         plan = self.planner.create_plan(intent.raw_message, intent.target)
 
@@ -211,7 +240,7 @@ class CodingAgent:
                 raw_message=intent.raw_message,
                 confidence=0.9,
             )
-            outputs.append(self._handle_create_file(create_intent, context))
+            outputs.append(self._handle_create_file(create_intent, context, confirmed=True))
         else:
             modify_intent = Intent(
                 name="modify_code",
@@ -220,7 +249,7 @@ class CodingAgent:
                 raw_message=intent.raw_message,
                 confidence=0.9,
             )
-            outputs.append(self._handle_modify_code(modify_intent, context))
+            outputs.append(self._handle_modify_code(modify_intent, context, confirmed=True))
 
         return "Plan executed:\n\n" + "\n\n".join(outputs)
 
@@ -419,10 +448,12 @@ class CodingAgent:
 
         return None
 
-    def _handle_create_file(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
+    def _handle_create_file(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         target = intent.target
         if not target:
             return "Usage: tell me which file to create, e.g. 'create hello.py'"
+
+        is_python = target.lower().endswith(".py")
 
         target_path = Path(target)
         file_exists = False
@@ -431,28 +462,49 @@ class CodingAgent:
         except PermissionError:
             pass
 
+        cached = self._pending_edits.get(target)
         content = ""
         if intent.args and isinstance(intent.args, dict):
             content = intent.args.get("content", "")
 
         if not content:
-            generated = self._generate_file_content(target, intent.raw_message, context)
-            if generated:
-                content = generated
+            if confirmed and cached:
+                content = cached
             else:
-                return (
-                    f"I can create `{target}`."
-                    + (" This file already exists and will be overwritten." if file_exists else "")
-                    + " Tell me what content to write."
-                )
+                generated = self._generate_file_content(target, intent.raw_message, context)
+                if generated:
+                    content = generated
+                else:
+                    return (
+                        f"I can create `{target}`."
+                        + (" This file already exists and will be overwritten." if file_exists else "")
+                        + " Tell me what content to write."
+                    )
+
+        if is_python and not confirmed:
+            self._pending_edits[target] = content
+            return self._edit_confirmation_prompt(
+                "create_file",
+                target,
+                reason=f"create the file `{target}`",
+                preview=content,
+            )
+
+        self._pending_edits.pop(target, None)
 
         try:
             self.file_tools.write_text(target_path, content)
         except PermissionError as error:
             return str(error)
 
+        resolved_path = target_path if target_path.is_absolute() else (self.root / target_path).resolve()
+
         action = "Overwritten" if file_exists else "Created"
-        verification = self.verifier.verify_file(target_path, context)
+        verification = self.verifier.verify_file(resolved_path, context)
+
+        test_output = ""
+        if is_python:
+            test_output = self._test_python_file(resolved_path)
 
         self.memory.add_file_event(target, action.lower(), content)
         self.memory.add_task(
@@ -465,7 +517,7 @@ class CodingAgent:
         truncated = len(content) > len(preview)
         body = f"{preview}\n\n[Output truncated]" if truncated else preview
 
-        return f"{action} `{target}`:\n\n{body}\n\n{verification}"
+        return f"{action} `{target}`:\n\n{body}\n\n{verification}\n\n{test_output}".strip()
 
     def _generate_file_content(self, target: str, raw_message: str, context: Optional[AgentContext] = None) -> str:
         ctx_block = ""
@@ -484,7 +536,7 @@ class CodingAgent:
         except Exception:
             return ""
 
-    def _handle_modify_code(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
+    def _handle_modify_code(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         target = intent.target
         if not target:
             return "Usage: tell me which file to modify, e.g. 'add a function to utils.py'"
@@ -492,6 +544,8 @@ class CodingAgent:
         resolved = self._resolve_path(target)
         if resolved is None:
             return f"File not found: {target}"
+
+        is_python = resolved.suffix == ".py"
 
         try:
             current_content = self.file_tools.read_text(resolved)
@@ -508,16 +562,34 @@ class CodingAgent:
             "Return ONLY the complete new file content."
         )
 
-        try:
-            new_content = self.intent_parser.generate(system_prompt, user_prompt)
-        except Exception as error:
-            return f"Failed to generate edit: {error}"
+        cached = self._pending_edits.get(target)
+        if confirmed and cached:
+            new_content = cached
+        else:
+            try:
+                new_content = self.intent_parser.generate(system_prompt, user_prompt)
+            except Exception as error:
+                return f"Failed to generate edit: {error}"
 
         if not new_content or not new_content.strip():
             return "Generated content is empty. Please try again with a more specific request."
 
         if new_content.strip() == current_content.strip():
             return f"File `{target}` is already up to date. No changes were needed."
+
+        diff_text = self._compute_diff(current_content, new_content, target)
+
+        if is_python and not confirmed:
+            self._pending_edits[target] = new_content
+            return self._edit_confirmation_prompt(
+                "modify_code",
+                target,
+                reason=f"apply these changes to `{target}`",
+                preview=diff_text,
+                language="diff",
+            )
+
+        self._pending_edits.pop(target, None)
 
         try:
             self.file_tools.write_text(resolved, new_content)
@@ -531,14 +603,18 @@ class CodingAgent:
             files_affected=[target],
         )
 
-        diff_text = self._compute_diff(current_content, new_content, target)
         verification = self.verifier.verify_file(resolved, context)
+
+        test_output = ""
+        if is_python:
+            test_output = self._test_python_file(resolved)
 
         return (
             f"Modified `{target}`:\n\n"
             f"```diff\n{diff_text}\n```\n\n"
-            f"{verification}"
-        )
+            f"{verification}\n\n"
+            f"{test_output}"
+        ).strip()
 
     def _handle_delete_file(self, intent: Intent) -> str:
         target = intent.target
