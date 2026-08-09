@@ -207,11 +207,12 @@ class MemoryStore:
 
     # -- raw filter (no vector) --
 
-    def get_by_type(self, doc_type: str, limit: int = 20) -> list[dict]:
+    def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
         results = self.collection.get(
             where={"doc_type": doc_type},
             include=["metadatas", "documents"],
             limit=limit,
+            offset=offset,
         )
         merged = []
         if results["ids"]:
@@ -224,7 +225,19 @@ class MemoryStore:
         return merged
 
     def get_all_by_type(self, doc_type: str) -> list[dict]:
-        return self.get_by_type(doc_type, limit=100000)
+        """Fetch every document of a type, paging to stay under Chroma's Get quota."""
+        results: list[dict] = []
+        offset = 0
+        page_size = 300
+        while True:
+            page = self.get_by_type(doc_type, limit=page_size, offset=offset)
+            if not page:
+                break
+            results.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        return results
 
     def delete_by_ids(self, ids: list[str]) -> None:
         if not ids:
