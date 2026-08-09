@@ -13,8 +13,7 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  max-width: 860px;
-  margin: 0 auto;
+  width: 100%;
 }
 
 .app-header {
@@ -44,18 +43,38 @@ body {
 
 .workspace {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr) 420px;
+  min-height: 0;
   overflow: hidden;
 }
 
 .files-panel {
-  width: 280px;
-  min-width: 280px;
+  min-width: 0;
   border-right: 1px solid #26292f;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: #12141a;
+}
+
+.editor-panel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #0d0f13;
+}
+
+.editor-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6b7280;
+  font-size: 13px;
+  padding: 20px;
+  text-align: center;
 }
 
 .files-header {
@@ -136,9 +155,8 @@ body {
 }
 
 .file-preview {
-  border-top: 1px solid #26292f;
-  flex-shrink: 0;
-  max-height: 40%;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -150,6 +168,8 @@ body {
   font-weight: 600;
   color: #9ca3af;
   background: #1c1f26;
+  border-bottom: 1px solid #26292f;
+  flex-shrink: 0;
 }
 
 .file-preview pre {
@@ -164,7 +184,8 @@ body {
 }
 
 .chat {
-  flex: 1;
+  min-width: 0;
+  border-left: 1px solid #26292f;
   display: flex;
   flex-direction: column;
   overflow: hidden;

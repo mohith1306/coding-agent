@@ -300,7 +300,7 @@ export default function App() {
 
       <div className="workspace">
         <aside className="files-panel">
-          <div className="files-header">Workspace</div>
+          <div className="files-header">Explorer</div>
           {!tree && <div className="files-empty">No files yet.</div>}
           {tree && tree.length === 0 && (
             <div className="files-empty">Empty workspace.</div>
@@ -319,13 +319,21 @@ export default function App() {
               ))}
             </div>
           )}
+        </aside>
+
+        <main className="editor-panel">
+          {!selected && (
+            <div className="editor-empty">
+              Select a file from the explorer to preview it.
+            </div>
+          )}
           {selected && (
             <div className="file-preview">
               <div className="file-preview-name">{selected}</div>
               <pre>{fileContent}</pre>
             </div>
           )}
-        </aside>
+        </main>
 
         <main className="chat">
           <div className="messages">
