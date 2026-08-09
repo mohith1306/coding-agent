@@ -45,6 +45,7 @@ class IntentParser:
             and bool(self.openrouter_api_key)
             and self.openrouter_api_key not in {"your-openrouter-api-key-here", ""}
         )
+        self.max_tokens = int(os.getenv("CODING_AGENT_MAX_TOKENS", "2048"))
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)
 
@@ -163,6 +164,7 @@ class IntentParser:
         payload: dict[str, object] = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -193,6 +195,7 @@ class IntentParser:
         payload: dict[str, object] = {
             "model": model,
             "temperature": 0,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -232,6 +235,7 @@ class IntentParser:
         payload: dict[str, object] = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": self.max_tokens,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -281,6 +285,7 @@ class IntentParser:
             ],
             "generationConfig": {
                 "temperature": 0,
+                "maxOutputTokens": self.max_tokens,
             },
         }
         if json_mode:
