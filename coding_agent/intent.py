@@ -338,19 +338,22 @@ class IntentParser:
         if self.openrouter_fallback:
             logger.info("OpenRouter fallback enabled (model %s)", self.openrouter_model)
 
-        if not dotenv_path.is_file():
-            logger.warning("%s not loaded because .env is missing", self._api_key_name())
-            return
-
+        key_name = self._api_key_name()
+        source = f"{dotenv_path.name} or an env var" if dotenv_path.is_file() else "an env var"
         if not self.api_key:
-            logger.warning("%s is not set", self._api_key_name())
+            logger.warning("%s is not set (provide it via %s)", key_name, source)
             return
 
-        if self.api_key in {"your-openai-api-key-here", "your-gemini-api-key-here"}:
-            logger.warning("%s is present but still uses the placeholder value", self._api_key_name())
+        if self.api_key in {
+            "your-openai-api-key-here",
+            "your-gemini-api-key-here",
+            "your-groq-api-key-here",
+            "your-openrouter-api-key-here",
+        }:
+            logger.warning("%s is present but still uses the placeholder value", key_name)
             return
 
-        logger.info("%s is configured and will be used for intent parsing", self._api_key_name())
+        logger.info("%s is configured", key_name)
 
     def _api_key_for_provider(self) -> str:
         if self.provider == "gemini":
