@@ -25,8 +25,39 @@ export default function App() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null);
+  const [downloading, setDownloading] = useState(false);
   const endRef = useRef(null);
   const sessionIdRef = useRef(getSessionId());
+
+  async function downloadWorkspace() {
+    setDownloading(true);
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionIdRef.current}/download`,
+        { headers: { Accept: "application/zip" } }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Download failed");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${sessionIdRef.current}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: `Error: ${error.message}` },
+      ]);
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -100,6 +131,13 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>Coding Agent</h1>
+        <button
+          onClick={downloadWorkspace}
+          className="btn download"
+          disabled={downloading}
+        >
+          {downloading ? "Zipping…" : "Download workspace"}
+        </button>
       </header>
 
       <main className="chat">

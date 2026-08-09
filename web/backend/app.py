@@ -1,11 +1,14 @@
+import io
 import logging
 import threading
 import uuid
+import zipfile
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
@@ -50,6 +53,25 @@ class ChatResponse(BaseModel):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/sessions/{session_id}/download")
+def download_workspace(session_id: str):
+    workspace = WORKSPACES / session_id
+    if not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="No workspace for this session yet.")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(workspace.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(workspace))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{session_id}.zip"'},
+    )
 
 
 @app.post("/api/chat")

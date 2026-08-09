@@ -20,12 +20,26 @@ body {
 .app-header {
   padding: 16px 20px;
   border-bottom: 1px solid #26292f;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .app-header h1 {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
+}
+
+.btn.download {
+  background: #374151;
+  color: #e6e6e6;
+}
+
+.btn.download:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .chat {
