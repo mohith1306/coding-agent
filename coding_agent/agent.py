@@ -18,6 +18,9 @@ from .verifier import Verifier
 
 
 CODE_GEN_PROMPT = (Path(__file__).parent / "prompts" / "code_generation_prompt.md")
+REPAIR_PROMPT = (Path(__file__).parent / "prompts" / "repair_prompt.md")
+
+MAX_REPAIR_ATTEMPTS = 3
 
 CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"
 
@@ -206,6 +209,75 @@ class CodingAgent:
         passed = result.startswith("Exit code: 0")
         label = "PASS" if passed else "FAIL"
         return f"Sandbox test: [{label}] python3 {rel}\n{result}"
+
+    def _repair_python_file(self, path: Path, content: str, error: str, context: Optional[AgentContext] = None) -> str:
+        system_prompt = REPAIR_PROMPT.read_text(encoding="utf-8")
+        ctx_block = ""
+        if context:
+            ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
+        user_prompt = (
+            f"The file `{path.name}` failed to compile or run with this error:\n\n"
+            f"{error}\n\n"
+            f"Current file content:\n\n```\n{content}\n```\n\n"
+            f"Return ONLY the complete corrected file content.{ctx_block}"
+        )
+        try:
+            result = self.intent_parser.generate(system_prompt, user_prompt)
+            return result.strip()
+        except Exception:
+            return content
+
+    def _write_and_verify(
+        self,
+        resolved_path: Path,
+        content: str,
+        context: Optional[AgentContext] = None,
+        max_retries: int = MAX_REPAIR_ATTEMPTS,
+    ) -> tuple[str, str, str, int]:
+        """Write content, verify it compiles, and run the sandbox test. On failure,
+        feed the error back to the LLM to repair the file and retry. Returns
+        (final_content, verification, test_output, retries_used)."""
+        current = content
+        attempts = 0
+        while True:
+            self.file_tools.write_text(resolved_path, current)
+            verification = self.verifier.verify_file(resolved_path, context)
+            compile_ok = "compiles clean" in verification
+            test_output = ""
+            if resolved_path.suffix == ".py":
+                if compile_ok:
+                    test_output = self._test_python_file(resolved_path)
+                else:
+                    test_output = ""
+
+            passed = True
+            if resolved_path.suffix == ".py":
+                passed = compile_ok and test_output.startswith("Sandbox test: [PASS]")
+
+            if passed:
+                return current, verification, test_output, attempts
+            if attempts >= max_retries:
+                return current, verification, test_output, attempts
+
+            error_detail = verification
+            if test_output:
+                error_detail = f"{verification}\n{test_output}"
+            attempts += 1
+            repaired = self._repair_python_file(resolved_path, current, error_detail, context)
+            if not repaired or repaired == current:
+                return current, verification, test_output, attempts
+            current = repaired
+
+    def _retry_note(self, verification: str, test_output: str, retries: int) -> str:
+        if retries <= 0:
+            return ""
+        passed = "compiles clean" in verification and (
+            "Sandbox test: [PASS]" in test_output or not test_output
+        )
+        plural = "s" if retries != 1 else ""
+        if passed:
+            return f" (repaired after {retries} attempt{plural})"
+        return f" (could not repair after {retries} attempt{plural})"
 
     def _handle_plan(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         plan = self.planner.create_plan(intent.raw_message, intent.target)
@@ -494,19 +566,17 @@ class CodingAgent:
 
         self._pending_edits.pop(target, None)
 
-        try:
-            self.file_tools.write_text(target_path, content)
-        except PermissionError as error:
-            return str(error)
-
         resolved_path = target_path if target_path.is_absolute() else (self.root / target_path).resolve()
 
         action = "Overwritten" if file_exists else "Created"
-        verification = self.verifier.verify_file(resolved_path, context)
+        try:
+            content, verification, test_output, retries = self._write_and_verify(
+                resolved_path, content, context
+            )
+        except PermissionError as error:
+            return str(error)
 
-        test_output = ""
-        if is_python:
-            test_output = self._test_python_file(resolved_path)
+        retry_note = self._retry_note(verification, test_output, retries)
 
         self.memory.add_file_event(target, action.lower(), content)
         self.memory.add_task(
@@ -519,7 +589,7 @@ class CodingAgent:
         truncated = len(content) > len(preview)
         body = f"{preview}\n\n[Output truncated]" if truncated else preview
 
-        return f"{action} `{target}`:\n\n{body}\n\n{verification}\n\n{test_output}".strip()
+        return f"{action} `{target}`{retry_note}:\n\n{body}\n\n{verification}\n\n{test_output}".strip()
 
     def _handle_create_files(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         targets = []
@@ -559,7 +629,6 @@ class CodingAgent:
             content = contents.get(target)
             if content is None:
                 continue
-            is_python = target.lower().endswith(".py")
             target_path = Path(target)
             try:
                 file_exists = self.file_tools.exists(target_path)
@@ -567,17 +636,15 @@ class CodingAgent:
                 file_exists = False
 
             try:
-                self.file_tools.write_text(target_path, content)
+                content, verification, test_output, retries = self._write_and_verify(
+                    (self.root / target).resolve(), content, context
+                )
             except PermissionError as error:
                 parts.append(str(error))
                 continue
 
             action = "Overwritten" if file_exists else "Created"
-            resolved_path = (self.root / target).resolve()
-            verification = self.verifier.verify_file(resolved_path, context)
-            test_output = ""
-            if is_python:
-                test_output = self._test_python_file(resolved_path)
+            retry_note = self._retry_note(verification, test_output, retries)
 
             preview = content[:300]
             truncated = len(content) > len(preview)
@@ -590,7 +657,7 @@ class CodingAgent:
                 files_affected=[target],
             )
 
-            parts.append(f"{action} `{target}`:\n\n{body}\n\n{verification}\n\n{test_output}".strip())
+            parts.append(f"{action} `{target}`{retry_note}:\n\n{body}\n\n{verification}\n\n{test_output}".strip())
 
         for target in targets:
             self._pending_edits.pop(target, None)
@@ -705,9 +772,13 @@ class CodingAgent:
         self._pending_edits.pop(target, None)
 
         try:
-            self.file_tools.write_text(resolved, new_content)
+            new_content, verification, test_output, retries = self._write_and_verify(
+                resolved, new_content, context
+            )
         except PermissionError as error:
             return str(error)
+
+        retry_note = self._retry_note(verification, test_output, retries)
 
         self.memory.add_file_event(target, "modified", new_content)
         self.memory.add_task(
@@ -716,14 +787,11 @@ class CodingAgent:
             files_affected=[target],
         )
 
-        verification = self.verifier.verify_file(resolved, context)
-
-        test_output = ""
-        if is_python:
-            test_output = self._test_python_file(resolved)
+        if new_content.strip() != current_content.strip():
+            diff_text = self._compute_diff(current_content, new_content, target)
 
         return (
-            f"Modified `{target}`:\n\n"
+            f"Modified `{target}`{retry_note}:\n\n"
             f"```diff\n{diff_text}\n```\n\n"
             f"{verification}\n\n"
             f"{test_output}"

@@ -287,4 +287,66 @@ def test_create_files_infers_targets(agent: CodingAgent, workspace: Path) -> Non
     agent.handle("make files for sliding window and binary search", confirmed=True)
     assert (workspace / "sliding_window.py").exists()
     assert (workspace / "binary_search.py").exists()
-    assert not (workspace / "two_pointers.py").exists()
+
+
+def test_create_file_repaired_on_syntax_error(agent: CodingAgent, workspace: Path) -> None:
+    junk = "DSA/\nsliding_window.py\ntwo_pointers.py\n\nclass SlidingWindow:\n    pass\n"
+    clean = "class SlidingWindow:\n    def max_sum_subarray(self, arr, k):\n        return 0"
+    calls = []
+
+    def fake_generate(sys_p, user_p):
+        calls.append(user_p)
+        return clean if len(calls) > 1 else junk
+
+    agent.intent_parser.parse = lambda msg: _intent("create_file", "sliding_window.py", raw=msg)
+    agent.intent_parser.generate = fake_generate
+    agent.terminal = agent._build_terminal()
+    agent.terminal.run = lambda command, timeout=30: "Exit code: 0\n"
+
+    r = agent.handle("create sliding_window.py", confirmed=True)
+    assert "repaired after 1 attempt" in r
+    assert (workspace / "sliding_window.py").read_text() == clean
+    assert len(calls) == 2
+
+
+def test_create_file_repair_failures_reported(agent: CodingAgent, workspace: Path) -> None:
+    junk = "DSA/\nsliding_window.py\n\nclass SlidingWindow:\n    pass\n"
+    calls = []
+
+    def fake_generate(sys_p, user_p):
+        calls.append(user_p)
+        return f"{junk}  # attempt {len(calls)}\n"
+
+    agent.intent_parser.parse = lambda msg: _intent("create_file", "sliding_window.py", raw=msg)
+    agent.intent_parser.generate = fake_generate
+    agent.terminal = agent._build_terminal()
+    agent.terminal.run = lambda command, timeout=30: "Exit code: 1\nboom\n"
+
+    r = agent.handle("create sliding_window.py", confirmed=True)
+    assert "could not repair after 3 attempts" in r
+    assert "SyntaxError" in r
+    assert len(calls) == 4
+
+
+def test_create_files_repaired_per_file(agent: CodingAgent, workspace: Path) -> None:
+    junk = "DSA/\n__init__.py\nsliding_window.py\ntwo_pointers.py\nbinary_search.py\n\nclass X:\n    pass\n"
+    clean = "def run():\n    return 0"
+    calls = []
+
+    def fake_generate(sys_p, user_p):
+        calls.append(user_p)
+        return clean if len(calls) > 1 else junk
+
+    targets = ["sliding_window.py", "two_pointers.py", "binary_search.py"]
+    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={"targets": targets})
+    agent.intent_parser.generate = fake_generate
+    agent.terminal = agent._build_terminal()
+    agent.terminal.run = lambda command, timeout=30: "Exit code: 0\n"
+
+    r1 = agent.handle("make separate files for sliding window, two pointers, binary search")
+    assert r1.startswith(CONFIRMATION_MARKER)
+
+    r2 = agent.handle("make separate files", confirmed=True)
+    assert "repaired after 1 attempt" in r2
+    for name in targets:
+        assert (workspace / name).read_text() == clean
