@@ -100,3 +100,23 @@ def test_run_python_runs_in_sandbox(client, sid):
 def test_run_missing_workspace_404(client, sid):
     res = client.post("/api/sessions/ghost/run", json={"file_path": "app.py"})
     assert res.status_code == 404
+
+
+def test_create_session_creates_workspace(client):
+    res = client.post("/api/sessions/brand-new-tab")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["session_id"] == "brand-new-tab"
+    assert (appmod.WORKSPACES / "brand-new-tab").is_dir()
+
+    files = client.get("/api/sessions/brand-new-tab/files")
+    assert files.status_code == 200
+    assert files.json()["tree"] == []
+
+
+def test_create_session_is_idempotent(client):
+    res1 = client.post("/api/sessions/dup")
+    res2 = client.post("/api/sessions/dup")
+    assert res1.status_code == 200
+    assert res2.status_code == 200
+    assert res2.json()["session_id"] == "dup"

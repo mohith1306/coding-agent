@@ -209,6 +209,14 @@ def download_workspace(session_id: str):
     )
 
 
+@app.post("/api/sessions/{session_id}")
+def create_session(session_id: str):
+    agent, resolved = _get_agent(session_id)
+    workspace = WORKSPACES / resolved
+    logger.info("Ensured session %s (workspace %s)", resolved, workspace)
+    return {"session_id": resolved, "workspace": str(workspace)}
+
+
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> ChatResponse:
     agent, session_id = _get_agent(request.session_id)
