@@ -135,6 +135,27 @@ body {
   flex-shrink: 0;
 }
 
+.file-entry .file-del {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.file-entry:hover .file-del {
+  opacity: 1;
+}
+
+.file-entry .file-del:hover {
+  color: #f87171;
+  background: #1c1f26;
+}
+
 .file-entry.file {
   color: #cbd5e1;
   cursor: pointer;
@@ -162,25 +183,102 @@ body {
   overflow: hidden;
 }
 
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #1c1f26;
+  border-bottom: 1px solid #26292f;
+  flex-shrink: 0;
+  padding-right: 12px;
+}
+
 .file-preview-name {
   padding: 10px 16px;
   font-size: 12px;
   font-weight: 600;
   color: #9ca3af;
-  background: #1c1f26;
-  border-bottom: 1px solid #26292f;
   flex-shrink: 0;
 }
 
-.file-preview pre {
+.editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn.run {
+  background: #059669;
+  color: #fff;
+}
+
+.btn.run:disabled,
+.btn.save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.save {
+  background: #2563eb;
+  color: #fff;
+}
+
+.btn.del {
+  background: #374151;
+  color: #f87171;
+}
+
+.code-editor {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  border: none;
+  outline: none;
+  margin: 0;
+  padding: 12px 16px;
+  background: #0d0f13;
+  color: #e6e6e6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  tab-size: 4;
+  white-space: pre;
+}
+
+.code-editor:focus {
+  outline: none;
+}
+
+.run-output {
+  border-top: 1px solid #26292f;
+  max-height: 35%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.run-output-title {
+  padding: 8px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  background: #12141a;
+  border-bottom: 1px solid #26292f;
+}
+
+.run-output pre {
   flex: 1;
   overflow: auto;
   margin: 0;
-  padding: 12px 16px;
+  padding: 10px 16px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
-  color: #e6e6e6;
-  white-space: pre;
+  color: #a7f3d0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat {

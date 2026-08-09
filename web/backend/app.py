@@ -50,9 +50,27 @@ class ChatResponse(BaseModel):
     target: str = ""
 
 
+class SaveFileRequest(BaseModel):
+    content: str
+
+
+class RunFileRequest(BaseModel):
+    file_path: str
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+def _resolve_workspace_path(session_id: str, file_path: str) -> Path:
+    workspace = (WORKSPACES / session_id).resolve()
+    if not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="No workspace for this session yet.")
+    target = (workspace / file_path).resolve()
+    if target != workspace and workspace not in target.parents:
+        raise HTTPException(status_code=403, detail="Path is outside the workspace.")
+    return target
 
 
 @app.get("/api/sessions/{session_id}/files")
@@ -90,6 +108,47 @@ def read_workspace_file(session_id: str, file_path: str):
     if not str(target).startswith(str(workspace)) or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found.")
     return {"path": file_path, "content": target.read_text(errors="replace")}
+
+
+@app.put("/api/sessions/{session_id}/files/{file_path:path}")
+def save_workspace_file(session_id: str, file_path: str, request: SaveFileRequest):
+    target = _resolve_workspace_path(session_id, file_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(request.content, encoding="utf-8")
+    return {"path": file_path, "size": target.stat().st_size}
+
+
+@app.delete("/api/sessions/{session_id}/files/{file_path:path}")
+def delete_workspace_file(session_id: str, file_path: str):
+    target = _resolve_workspace_path(session_id, file_path)
+    if target.is_file():
+        target.unlink()
+    elif target.is_dir():
+        if any(target.iterdir()):
+            raise HTTPException(status_code=400, detail="Directory is not empty.")
+        target.rmdir()
+    else:
+        raise HTTPException(status_code=404, detail="Not found.")
+    return {"deleted": file_path}
+
+
+@app.post("/api/sessions/{session_id}/run")
+def run_python_file(session_id: str, request: RunFileRequest):
+    target = _resolve_workspace_path(session_id, request.file_path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    if target.suffix != ".py":
+        raise HTTPException(status_code=400, detail="Only Python files can be executed for now.")
+
+    agent, _ = _get_agent(session_id)
+    try:
+        workspace = (WORKSPACES / session_id).resolve()
+        relative = str(target.relative_to(workspace))
+        result = agent.terminal.run(f"python3 {relative}", timeout=60)
+    except Exception as error:
+        logger.exception("Run failed for session %s", session_id)
+        raise HTTPException(status_code=500, detail=str(error))
+    return {"path": request.file_path, "result": result}
 
 
 @app.get("/api/sessions/{session_id}/download")

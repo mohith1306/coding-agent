@@ -61,7 +61,7 @@ function fileTypeFor(name) {
   return null;
 }
 
-function FileTree({ node, depth = 0, onSelect, selected, open, onToggle }) {
+function FileTree({ node, depth = 0, onSelect, selected, open, onToggle, onDelete }) {
   const indent = { paddingLeft: `${depth * 14 + 8}px` };
   if (node.type === "file") {
     const isSel = selected === node.path;
@@ -79,7 +79,16 @@ function FileTree({ node, depth = 0, onSelect, selected, open, onToggle }) {
           {icon}
         </span>
         <span className="file-name">{node.name}</span>
-        <span className="file-ext">{info ? `.${info}` : ""}</span>
+        <span
+          className="file-del"
+          title="Delete file"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(node.path);
+          }}
+        >
+          ✕
+        </span>
       </div>
     );
   }
@@ -106,6 +115,7 @@ function FileTree({ node, depth = 0, onSelect, selected, open, onToggle }) {
             selected={selected}
             open={open}
             onToggle={onToggle}
+            onDelete={onDelete}
           />
         ))}
     </div>
@@ -121,6 +131,10 @@ export default function App() {
   const [tree, setTree] = useState(null);
   const [selected, setSelected] = useState("");
   const [fileContent, setFileContent] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [runResult, setRunResult] = useState("");
   const [openFolders, setOpenFolders] = useState(() => new Set());
   const endRef = useRef(null);
   const sessionIdRef = useRef(getSessionId());
@@ -166,6 +180,8 @@ export default function App() {
     setSelected(path);
     revealPath(path);
     setFileContent("");
+    setDirty(false);
+    setRunResult("");
     try {
       const res = await fetch(
         `/api/sessions/${sessionIdRef.current}/files/${path}`
@@ -178,6 +194,82 @@ export default function App() {
       setFileContent(data.content);
     } catch {
       setFileContent("(unable to read file)");
+    }
+  }
+
+  async function saveFile() {
+    if (!selected || !dirty) return;
+    setSaving(true);
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionIdRef.current}/files/${selected}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: fileContent }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Save failed");
+      }
+      setDirty(false);
+      refreshFiles();
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: `Error saving: ${error.message}` },
+      ]);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteFile(path) {
+    if (!window.confirm(`Delete ${path}?`)) return;
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionIdRef.current}/files/${path}`,
+        { method: "DELETE" }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Delete failed");
+      }
+      if (selected === path) {
+        setSelected("");
+        setFileContent("");
+        setDirty(false);
+        setRunResult("");
+      }
+      refreshFiles();
+    } catch (error) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "agent", text: `Error deleting: ${error.message}` },
+      ]);
+    }
+  }
+
+  async function runFile() {
+    if (!selected) return;
+    setRunning(true);
+    setRunResult("");
+    try {
+      const res = await fetch(`/api/sessions/${sessionIdRef.current}/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_path: selected }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || "Run failed");
+      }
+      setRunResult(data.result);
+    } catch (error) {
+      setRunResult(`Error: ${error.message}`);
+    } finally {
+      setRunning(false);
     }
   }
 
@@ -315,6 +407,7 @@ export default function App() {
                   selected={selected}
                   open={openFolders}
                   onToggle={toggleFolder}
+                  onDelete={deleteFile}
                 />
               ))}
             </div>
@@ -324,13 +417,60 @@ export default function App() {
         <main className="editor-panel">
           {!selected && (
             <div className="editor-empty">
-              Select a file from the explorer to preview it.
+              Select a file from the explorer to view or edit it.
             </div>
           )}
           {selected && (
             <div className="file-preview">
-              <div className="file-preview-name">{selected}</div>
-              <pre>{fileContent}</pre>
+              <div className="editor-toolbar">
+                <span className="file-preview-name">{selected}</span>
+                <div className="editor-actions">
+                  {selected.endsWith(".py") && (
+                    <button
+                      onClick={runFile}
+                      className="btn run"
+                      disabled={running || dirty}
+                      title={
+                        dirty
+                          ? "Save changes before running"
+                          : "Run in sandbox (Python only)"
+                      }
+                    >
+                      {running ? "Running…" : "Run"}
+                    </button>
+                  )}
+                  <button
+                    onClick={saveFile}
+                    className="btn save"
+                    disabled={saving || !dirty}
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    onClick={() => deleteFile(selected)}
+                    className="btn del"
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <textarea
+                className="code-editor"
+                value={fileContent}
+                onChange={(e) => {
+                  setFileContent(e.target.value);
+                  setDirty(true);
+                }}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+              />
+              {runResult && (
+                <div className="run-output">
+                  <div className="run-output-title">Output</div>
+                  <pre>{runResult}</pre>
+                </div>
+              )}
             </div>
           )}
         </main>
