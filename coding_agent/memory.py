@@ -222,3 +222,11 @@ class MemoryStore:
                     "metadata": results["metadatas"][i],
                 })
         return merged
+
+    def get_all_by_type(self, doc_type: str) -> list[dict]:
+        return self.get_by_type(doc_type, limit=100000)
+
+    def delete_by_ids(self, ids: list[str]) -> None:
+        if not ids:
+            return
+        self.collection.delete(ids=ids)

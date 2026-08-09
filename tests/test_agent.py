@@ -12,9 +12,14 @@ class FakeMemory:
         self.turns = []
         self.tasks = []
         self.preferences = {}
+        self.deleted = []
 
     def add_turn(self, user_message, agent_response, intent="", target=""):
-        self.turns.append((user_message, agent_response, intent, target))
+        self.turns.append({
+            "id": f"id{len(self.turns)}",
+            "document": f"User: {user_message}\nAgent: {agent_response}",
+            "metadata": {"timestamp": len(self.turns)},
+        })
 
     def recent_turns(self, limit=5):
         return []
@@ -26,6 +31,15 @@ class FakeMemory:
         if doc_type == "task":
             return self.tasks
         return []
+
+    def get_all_by_type(self, doc_type):
+        if doc_type == "chat":
+            return self.turns
+        return []
+
+    def delete_by_ids(self, ids):
+        self.deleted.extend(ids)
+        self.turns = [t for t in self.turns if t["id"] not in ids]
 
     def add_task(self, description, status="pending", files_affected=None):
         self.tasks.append({
@@ -163,3 +177,27 @@ def test_plan_not_executable(agent: CodingAgent) -> None:
     agent.intent_parser.parse = lambda msg: _intent("plan", "", raw=msg)
     response = agent.handle("plan out how to build a login feature")
     assert response.startswith("Here's a plan")
+
+
+def test_auto_compaction_triggers_in_handle(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: "COMPACTED: task summary here."
+    agent.compaction.max_tokens = 100
+    agent.compaction.keep_recent = 10
+
+    for i in range(20):
+        agent.handle(f"request number {i}")
+
+    assert len(agent.memory.turns) == 10
+    assert len(agent.memory.deleted) > 0
+    assert agent.memory.get_preference("compaction_summary") == "COMPACTED: task summary here."
+
+
+def test_auto_compaction_noop_under_budget(agent: CodingAgent) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+
+    for i in range(3):
+        agent.handle(f"request number {i}")
+
+    assert len(agent.memory.turns) == 3
+    assert agent.memory.get_preference("compaction_summary") is None

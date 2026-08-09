@@ -38,6 +38,8 @@ class AgentContext:
     has_lint_config: bool
     has_typecheck_config: bool
 
+    session_summary: str = ""
+
 
 class ContextBuilder:
     def __init__(self, memory: MemoryStore, root: Optional[Path] = None) -> None:
@@ -49,6 +51,7 @@ class ContextBuilder:
         last_turn = chat_history[-1] if chat_history else {}
         last_intent = last_turn.get("intent", "")
         last_target = last_turn.get("target", "")
+        session_summary = self.memory.get_preference("compaction_summary") or ""
 
         logger.info("Building context for: %s", user_message[:80])
         similar_context = self.memory.retrieve_similar(user_message, k=5)
@@ -66,6 +69,7 @@ class ContextBuilder:
             similar_context=similar_context,
             last_intent=last_intent,
             last_target=last_target,
+            session_summary=session_summary,
             branch=branch,
             has_dirty_files=len(dirty_files) > 0,
             dirty_files=dirty_files,
@@ -93,6 +97,9 @@ class ContextBuilder:
             parts.append(f"Dirty: {files_str}")
             if len(ctx.dirty_files) > 5:
                 parts[-1] += f" (+{len(ctx.dirty_files)-5} more)"
+
+        if ctx.session_summary:
+            parts.append(f"\n--- Session Summary ---\n{ctx.session_summary[:4000]}")
 
         if ctx.chat_history:
             last = ctx.chat_history[-1]

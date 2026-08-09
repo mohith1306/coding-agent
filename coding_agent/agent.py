@@ -1,7 +1,9 @@
 import difflib
+import logging
 from pathlib import Path
 from typing import Optional
 
+from .compaction import CompactionManager
 from .context import AgentContext, ContextBuilder
 from .intent import Intent, IntentParser
 from .memory import MemoryStore
@@ -17,6 +19,8 @@ CODE_GEN_PROMPT = (Path(__file__).parent / "prompts" / "code_generation_prompt.m
 
 CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"
 
+logger = logging.getLogger(__name__)
+
 
 class CodingAgent:
     def __init__(self, memory: Optional[MemoryStore] = None, root: Optional[Path] = None) -> None:
@@ -30,6 +34,11 @@ class CodingAgent:
         self.git = GitContext(root=self.root)
         self.github = GitHubIntegration(self.root)
         self.planner = Planner()
+        self.compaction = CompactionManager(
+            self.memory,
+            generate=self._generate_summary,
+            summary_key="compaction_summary",
+        )
 
     def handle(self, user_message: str, confirmed: bool = False) -> str:
         intent = self.intent_parser.parse(user_message)
@@ -47,6 +56,8 @@ class CodingAgent:
             target=intent.target,
         )
 
+        self._maybe_compact()
+
         if tool_response is not None:
             return tool_response
 
@@ -55,6 +66,21 @@ class CodingAgent:
             f"Context: {self.context_builder.format_for_prompt(context)}\n\n"
             "However, I could not determine a specific action to take."
         )
+
+    def _maybe_compact(self) -> None:
+        try:
+            if self.compaction.should_compact():
+                logger.info("Context hit %d tokens; compacting", self.compaction.current_tokens())
+                self.compaction.compact()
+        except Exception as error:
+            logger.warning("Compaction failed: %s", error)
+
+    def _generate_summary(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            return self.intent_parser.generate(system_prompt, user_prompt)
+        except Exception as error:
+            logger.warning("Summary generation failed: %s", error)
+            return ""
 
     def _confirmation_prompt(self, intent: Intent) -> str:
         lines = [
