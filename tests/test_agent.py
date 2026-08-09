@@ -307,6 +307,53 @@ def test_create_files_infers_targets(agent: CodingAgent, workspace: Path) -> Non
     assert (workspace / "binary_search.py").exists()
 
 
+def test_create_project_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: (
+        '{"files":["server/models/Todo.js","server/routes/todo.js","server/app.js"]}'
+    )
+
+    r1 = agent.handle("create a to-do list project with the necessary tech stack")
+    assert r1.startswith(CONFIRMATION_MARKER)
+    assert "Action: create_project" in r1
+    assert "Project structure" in r1
+    assert "server/models/Todo.js" in r1
+    for name in ["server/models/Todo.js", "server/routes/todo.js", "server/app.js"]:
+        assert not (workspace / name).exists()
+
+    r2 = agent.handle("create a to-do list project", confirmed=True)
+    assert "Project created with 3 files" in r2
+    for name in ["server/models/Todo.js", "server/routes/todo.js", "server/app.js"]:
+        assert (workspace / name).exists()
+
+
+def test_create_project_writes_nested_folders(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: (
+        '{"files":["client/src/components/Todo.js","server/config/db.js"]}'
+    )
+
+    r = agent.handle("build a todo app", confirmed=True)
+    assert "Project created with 2 files" in r
+    assert (workspace / "client/src/components/Todo.js").is_file()
+    assert (workspace / "server/config/db.js").is_file()
+
+
+def test_create_project_strips_code_fences(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.generate = lambda sys_p, user_p: (
+        '{"files":["server/models/Todo.js","server/routes/todo.js","server/app.js"]}'
+        if "architect" in sys_p
+        else "server/models/Todo.js\n```javascript\nclass Todo {\n  constructor() {}\n}\n```"
+    )
+
+    r = agent.handle("create a to-do project", confirmed=True)
+    content = (workspace / "server/models/Todo.js").read_text()
+    assert content.startswith("class Todo {")
+    assert "```" not in content
+    assert "server/models/Todo.js" not in content
+
+
 def test_create_file_repaired_on_syntax_error(agent: CodingAgent, workspace: Path) -> None:
     junk = "DSA/\nsliding_window.py\ntwo_pointers.py\n\nclass SlidingWindow:\n    pass\n"
     clean = "class SlidingWindow:\n    def max_sum_subarray(self, arr, k):\n        return 0"

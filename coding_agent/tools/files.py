@@ -23,6 +23,7 @@ class FileTools:
 
     def write_text(self, path: Path, content: str) -> None:
         safe_path = self._resolve_safe_path(path)
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
         safe_path.write_text(content, encoding="utf-8")
 
     def _resolve_safe_path(self, path: Path) -> Path:

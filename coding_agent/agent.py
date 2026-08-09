@@ -1,4 +1,5 @@
 import difflib
+import json
 import logging
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ from .verifier import Verifier
 CODE_GEN_PROMPT = (Path(__file__).parent / "prompts" / "code_generation_prompt.md")
 REPAIR_PROMPT = (Path(__file__).parent / "prompts" / "repair_prompt.md")
 QUESTION_PROMPT = (Path(__file__).parent / "prompts" / "question_prompt.md")
+PROJECT_MANIFEST_PROMPT = (Path(__file__).parent / "prompts" / "project_manifest_prompt.md")
 
 MAX_REPAIR_ATTEMPTS = 3
 
@@ -144,6 +146,8 @@ class CodingAgent:
             return self._handle_create_file(intent, context, confirmed)
         if intent.name == "create_files":
             return self._handle_create_files(intent, context, confirmed)
+        if intent.name == "create_project":
+            return self._handle_create_project(intent, context, confirmed)
         if intent.name == "modify_code":
             return self._handle_modify_code(intent, context, confirmed)
         if intent.name == "delete_file":
@@ -229,7 +233,7 @@ class CodingAgent:
         )
         try:
             result = self.intent_parser.generate(system_prompt, user_prompt)
-            return result.strip()
+            return self._strip_code_fences(result)
         except Exception:
             return content
 
@@ -296,6 +300,20 @@ class CodingAgent:
         if passed:
             return f" (repaired after {retries} attempt{plural})"
         return f" (could not repair after {retries} attempt{plural})"
+
+    @staticmethod
+    def _strip_code_fences(content: str) -> str:
+        text = content.strip()
+        lines = text.splitlines()
+        open_idx = next((i for i, line in enumerate(lines) if line.strip().startswith("```")), None)
+        if open_idx is None:
+            return content
+        body = lines[open_idx + 1:]
+        close_idx = next((i for i, line in enumerate(body) if line.strip().startswith("```")), None)
+        if close_idx is not None:
+            body = body[:close_idx]
+        return "\n".join(body).strip()
+
     def _handle_plan(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         plan = self.planner.create_plan(intent.raw_message, intent.target)
 
@@ -703,6 +721,116 @@ class CodingAgent:
 
         return "Created multiple files:\n\n" + "\n\n---\n\n".join(parts)
 
+    def _generate_project_targets(self, raw_message: str, context: Optional[AgentContext] = None) -> list[str]:
+        system_prompt = PROJECT_MANIFEST_PROMPT.read_text(encoding="utf-8")
+        ctx_block = ""
+        if context:
+            ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
+        try:
+            result = self.intent_parser.generate(system_prompt, raw_message + ctx_block)
+        except Exception as error:
+            logger.warning("Failed to generate project structure: %s", error)
+            return []
+        try:
+            parsed = json.loads(result)
+            files = parsed.get("files", []) if isinstance(parsed, dict) else parsed
+        except (json.JSONDecodeError, AttributeError):
+            files = []
+        return [str(f).strip() for f in files if str(f).strip()]
+
+    def _handle_create_project(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
+        targets = self._generate_project_targets(intent.raw_message, context)
+        if not targets:
+            return "I could not figure out a file structure for that project. Please name the tech stack or files you want."
+
+        cached = self._pending_edits
+
+        contents: dict[str, str] = {}
+        for target in targets:
+            if confirmed and target in cached:
+                contents[target] = cached[target]
+                continue
+            generated = self._generate_file_content(target, intent.raw_message, context, project_files=targets)
+            if generated:
+                contents[target] = generated
+
+        if not contents:
+            return "I could not generate content for the project files. Please be more specific."
+
+        if not confirmed:
+            for target, content in contents.items():
+                self._pending_edits[target] = content
+            return self._project_confirmation_prompt(targets, contents)
+
+        for target in list(cached.keys()):
+            if target not in contents:
+                contents[target] = cached[target]
+
+        parts = []
+        for target in targets:
+            content = contents.get(target)
+            if content is None:
+                continue
+            target_path = Path(target)
+            try:
+                file_exists = self.file_tools.exists(target_path)
+            except PermissionError:
+                file_exists = False
+
+            try:
+                content, verification, test_output, retries = self._write_and_verify(
+                    (self.root / target).resolve(), content, context
+                )
+            except PermissionError as error:
+                parts.append(str(error))
+                continue
+
+            action = "Overwritten" if file_exists else "Created"
+            retry_note = self._retry_note(verification, test_output, retries)
+
+            preview = content[:300]
+            truncated = len(content) > len(preview)
+            body = f"{preview}\n\n[Output truncated]" if truncated else preview
+
+            self.memory.add_file_event(target, action.lower(), content)
+            self.memory.add_task(
+                description=f"Create {target}",
+                status="done",
+                files_affected=[target],
+            )
+
+            parts.append(f"{action} `{target}`{retry_note}:\n\n{body}\n\n{verification}\n\n{test_output}".strip())
+
+        for target in targets:
+            self._pending_edits.pop(target, None)
+
+        structure = "\n".join(f"- {t}" for t in targets)
+        return f"Project created with {len(targets)} files:\n\n{structure}\n\n" + "\n\n---\n\n".join(parts)
+
+    def _project_confirmation_prompt(self, targets: list[str], contents: dict[str, str]) -> str:
+        blocks = []
+        for target in targets:
+            content = contents.get(target, "")
+            lang = "python" if target.endswith(".py") else "text"
+            blocks.append(f"```{lang}\n{content[:700]}\n```")
+        lines = [
+            CONFIRMATION_MARKER,
+            f"Action: create_project",
+            f"Target: {', '.join(targets)}",
+            f"Reason: scaffold a project with {len(targets)} files",
+            "",
+            f"Project structure:",
+            "",
+            "\n".join(f"- {t}" for t in targets),
+            "",
+            "Make these changes?",
+            "",
+            "\n\n".join(blocks),
+            "",
+            "Reply with 'yes' to proceed, or 'no' to cancel.",
+        ]
+        return "\n".join(lines)
+
     def _infer_targets(self, intent: Intent) -> list[str]:
         text = intent.raw_message.lower()
         targets = []
@@ -738,20 +866,28 @@ class CodingAgent:
         ]
         return "\n".join(lines)
 
-    def _generate_file_content(self, target: str, raw_message: str, context: Optional[AgentContext] = None) -> str:
+    def _generate_file_content(self, target: str, raw_message: str, context: Optional[AgentContext] = None, project_files: Optional[list[str]] = None) -> str:
         ctx_block = ""
         if context:
             ctx_block = f"\n\nProject context:\n{self.context_builder.format_for_prompt(context)}\n"
+        project_block = ""
+        if project_files:
+            project_block = "\n\nThis file is part of a project being created with these files:\n" + "\n".join(
+                f"- {f}" for f in project_files
+            )
         system_prompt = (
             f"You are a code generation assistant. Generate content for the file `{target}` "
             "based on the user's request. "
+            "Use object-oriented programming concepts (classes, encapsulation, inheritance, "
+            "methods) wherever the language and the file's role make it appropriate. "
+            f"{project_block}"
             "Return ONLY the raw file content. NO markdown fences, NO triple backticks, "
             "NO explanations, NO extra text of any kind. Just the code."
             f"{ctx_block}"
         )
         try:
             result = self.intent_parser.generate(system_prompt, raw_message)
-            return result.strip()
+            return self._strip_code_fences(result).strip()
         except Exception:
             return ""
 
@@ -786,7 +922,7 @@ class CodingAgent:
             new_content = cached
         else:
             try:
-                new_content = self.intent_parser.generate(system_prompt, user_prompt)
+                new_content = self._strip_code_fences(self.intent_parser.generate(system_prompt, user_prompt))
             except Exception as error:
                 return f"Failed to generate edit: {error}"
 
