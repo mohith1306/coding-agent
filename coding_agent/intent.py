@@ -38,6 +38,13 @@ class IntentParser:
             and bool(self.gemini_api_key)
             and self.gemini_api_key not in {"your-gemini-api-key-here", ""}
         )
+        self.openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
+        self.openrouter_model = os.getenv("CODING_AGENT_OPENROUTER_MODEL", "openrouter/auto")
+        self.openrouter_fallback = (
+            self.provider != "openrouter"
+            and bool(self.openrouter_api_key)
+            and self.openrouter_api_key not in {"your-openrouter-api-key-here", ""}
+        )
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)
 
@@ -96,21 +103,39 @@ class IntentParser:
         try:
             return self._call_primary_raw(system_prompt, user_message, json_mode)
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as error:
-            if not self.gemini_fallback:
-                raise
-            logger.warning(
-                "Primary provider %s failed (%s); falling back to Gemini %s",
-                self.provider,
-                self._safe_error_message(error),
-                self.gemini_model,
-            )
-            return self._call_gemini_raw(
-                system_prompt,
-                user_message,
-                json_mode,
-                model=self.gemini_model,
-                api_key=self.gemini_api_key,
-            )
+            if self.gemini_fallback:
+                try:
+                    logger.warning(
+                        "Primary provider %s failed (%s); falling back to Gemini %s",
+                        self.provider,
+                        self._safe_error_message(error),
+                        self.gemini_model,
+                    )
+                    return self._call_gemini_raw(
+                        system_prompt,
+                        user_message,
+                        json_mode,
+                        model=self.gemini_model,
+                        api_key=self.gemini_api_key,
+                    )
+                except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as gemini_error:
+                    error = gemini_error
+
+            if self.openrouter_fallback:
+                logger.warning(
+                    "Fallback providers failed (%s); falling back to OpenRouter %s",
+                    self._safe_error_message(error),
+                    self.openrouter_model,
+                )
+                return self._call_openrouter_raw(
+                    system_prompt,
+                    user_message,
+                    json_mode,
+                    model=self.openrouter_model,
+                    api_key=self.openrouter_api_key,
+                )
+
+            raise
 
     def _call_primary_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
         if self.provider == "gemini":
@@ -159,6 +184,38 @@ class IntentParser:
             body = json.loads(response.read().decode("utf-8"))
 
         logger.info("OpenAI returned a response")
+        return body["choices"][0]["message"]["content"]
+
+    def _call_openrouter_raw(self, system_prompt: str, user_message: str, json_mode: bool = False, model: Optional[str] = None, api_key: Optional[str] = None) -> str:
+        model = model or self.model
+        api_key = api_key or self.api_key
+        logger.info("Calling OpenRouter with model %s", model)
+        payload: dict[str, object] = {
+            "model": model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
+        request = Request(
+            "https://openrouter.ai/api/v1/chat/completions",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/mohith1306/coding-agent",
+                "X-Title": "Coding Agent",
+            },
+            method="POST",
+        )
+
+        with urlopen(request, timeout=30) as response:
+            body = json.loads(response.read().decode("utf-8"))
+
+        logger.info("OpenRouter returned a response")
         return body["choices"][0]["message"]["content"]
 
     def _call_groq(self, user_message: str) -> dict[str, object]:
@@ -265,6 +322,8 @@ class IntentParser:
         logger.info("Intent parser model: %s", self.model)
         if self.gemini_fallback:
             logger.info("Gemini fallback enabled (model %s)", self.gemini_model)
+        if self.openrouter_fallback:
+            logger.info("OpenRouter fallback enabled (model %s)", self.openrouter_model)
 
         if not dotenv_path.is_file():
             logger.warning("%s not loaded because .env is missing", self._api_key_name())
