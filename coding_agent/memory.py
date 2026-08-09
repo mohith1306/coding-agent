@@ -68,7 +68,7 @@ class MemoryStore:
                 "doc_type": "chat",
                 "role": "user",
                 "content": user_message[:1000],
-                "agent_response": agent_response[:1000],
+                "agent_response": agent_response[:2000],
                 "intent": intent,
                 "target": target,
                 "timestamp": self._next_timestamp(),

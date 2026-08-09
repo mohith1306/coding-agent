@@ -102,8 +102,16 @@ class ContextBuilder:
             parts.append(f"\n--- Session Summary ---\n{ctx.session_summary[:4000]}")
 
         if ctx.chat_history:
-            last = ctx.chat_history[-1]
-            parts.append(f"\nChat:\nUser: {last.get('user', '')[:200]}")
+            history_lines = []
+            for turn in reversed(ctx.chat_history[:5]):
+                user_text = turn.get("user", "")
+                agent_text = turn.get("agent", "")
+                if user_text:
+                    history_lines.append(f"User: {user_text[:500]}")
+                if agent_text:
+                    history_lines.append(f"Agent: {agent_text[:1200]}")
+            if history_lines:
+                parts.append("\nChat history:\n" + "\n".join(history_lines))
 
         if ctx.similar_context:
             ctx_lines = []
