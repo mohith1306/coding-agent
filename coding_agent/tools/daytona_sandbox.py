@@ -113,12 +113,15 @@ class DaytonaSandbox:
 
         block_reason = self._check_blocked(command)
         if block_reason:
+            logger.warning("Blocked command: %s", command)
             return block_reason
 
+        logger.info("$ (sandbox) %s (timeout=%ss)", command, timeout)
         try:
             self._sync()
             response = self._sandbox.process.exec(command, cwd=self._work_dir, timeout=timeout)
         except Exception as error:
+            logger.warning("Sandbox command failed: %s", command)
             return f"Failed to run in sandbox: {self._safe(error)}"
 
         output = (response.result or "").strip()
@@ -127,6 +130,7 @@ class DaytonaSandbox:
         if len(output) > self._max_output_chars:
             output = output[: self._max_output_chars] + "\n\n[Output truncated]"
 
+        logger.info("$ (sandbox) %s → exit %s", command, getattr(response, "exit_code", "unknown"))
         return f"Exit code: {getattr(response, 'exit_code', 'unknown')}\n{output}"
 
     # -- helpers ------------------------------------------------------------

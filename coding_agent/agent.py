@@ -48,12 +48,21 @@ class CodingAgent:
 
     def handle(self, user_message: str, confirmed: bool = False) -> str:
         intent = self.intent_parser.parse(user_message)
+        logger.info(
+            "Intent: %s target=%r confidence=%s confirmed=%s",
+            intent.name,
+            intent.target,
+            intent.confidence,
+            confirmed,
+        )
 
         if intent.requires_confirmation and not confirmed:
+            logger.info("Intent %s requires confirmation; asking user", intent.name)
             return self._confirmation_prompt(intent)
 
         context = self.context_builder.build(user_message)
         tool_response = self._handle_intent(intent, context, confirmed=confirmed)
+        logger.info("Intent %s handled (confirmed=%s)", intent.name, confirmed)
 
         self.memory.add_turn(
             user_message=user_message,
@@ -239,6 +248,7 @@ class CodingAgent:
         (final_content, verification, test_output, retries_used)."""
         current = content
         attempts = 0
+        rel = str(resolved_path.relative_to(self.root)) if self.root in resolved_path.parents else str(resolved_path)
         while True:
             self.file_tools.write_text(resolved_path, current)
             verification = self.verifier.verify_file(resolved_path, context)
@@ -254,17 +264,28 @@ class CodingAgent:
             if resolved_path.suffix == ".py":
                 passed = compile_ok and test_output.startswith("Sandbox test: [PASS]")
 
+            logger.info(
+                "Write+verify %s: compile=%s sandbox_test=%s",
+                rel,
+                "ok" if compile_ok else "FAILED",
+                "ok" if test_output.startswith("Sandbox test: [PASS]") else (test_output or "n/a"),
+            )
+
             if passed:
+                logger.info("File %s verified OK", rel)
                 return current, verification, test_output, attempts
             if attempts >= max_retries:
+                logger.warning("File %s still failing after %d repair attempt(s)", rel, attempts)
                 return current, verification, test_output, attempts
 
             error_detail = verification
             if test_output:
                 error_detail = f"{verification}\n{test_output}"
             attempts += 1
+            logger.info("Repair attempt %d/%d for %s", attempts, max_retries, rel)
             repaired = self._repair_python_file(resolved_path, current, error_detail, context)
             if not repaired or repaired == current:
+                logger.warning("Repair for %s produced no change; giving up", rel)
                 return current, verification, test_output, attempts
             current = repaired
 

@@ -1,7 +1,10 @@
+import logging
 import subprocess
 from pathlib import Path
 from typing import Optional
 
+
+logger = logging.getLogger(__name__)
 
 MAX_OUTPUT_CHARS = 8000
 DEFAULT_TIMEOUT_SECONDS = 30
@@ -32,9 +35,11 @@ class TerminalSandbox:
 
         block_reason = self._check_blocked(command)
         if block_reason:
+            logger.warning("Blocked command: %s", command)
             return block_reason
 
         command = self._normalize_python_command(command)
+        logger.info("$ %s (timeout=%ss)", command, timeout)
 
         try:
             result = subprocess.run(
@@ -46,6 +51,7 @@ class TerminalSandbox:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired:
+            logger.warning("Command timed out after %ss: %s", timeout, command[:120])
             return f"Command timed out after {timeout}s: {command[:120]}"
         except FileNotFoundError:
             return f"Command not found: {command}"
@@ -65,6 +71,7 @@ class TerminalSandbox:
         if len(output) > MAX_OUTPUT_CHARS:
             output = output[:MAX_OUTPUT_CHARS] + "\n\n[Output truncated]"
 
+        logger.info("$ %s → exit %s", command, result.returncode)
         status = f"Exit code: {result.returncode}"
         return f"{status}\n{output}"
 

@@ -1,5 +1,6 @@
 import io
 import logging
+import time
 import threading
 import uuid
 import zipfile
@@ -11,13 +12,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.memory import MemoryStore
 
 
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(level: int = logging.INFO) -> None:
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+setup_logging()
 
 app = FastAPI(title="Coding Agent API", version="0.1.0")
 
@@ -27,6 +41,23 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        start = time.perf_counter()
+        method = request.method
+        path = request.url.path
+        if path != "/health":
+            logger.info("→ %s %s", method, path)
+        response = await call_next(request)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        if path != "/health":
+            logger.info("← %s %s → %s (%d ms)", method, path, response.status_code, elapsed_ms)
+        return response
+
+
+app.add_middleware(RequestLoggingMiddleware)
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACES = ROOT / "web" / "workspaces"
@@ -79,6 +110,8 @@ def list_workspace_files(session_id: str):
     if not workspace.is_dir():
         raise HTTPException(status_code=404, detail="No workspace for this session yet.")
 
+    logger.info("Listing workspace files for session %s", session_id)
+
     def walk(directory: Path) -> list[dict]:
         entries = []
         for path in sorted(directory.iterdir()):
@@ -107,6 +140,7 @@ def read_workspace_file(session_id: str, file_path: str):
     target = (workspace / file_path).resolve()
     if not str(target).startswith(str(workspace)) or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found.")
+    logger.info("Reading file %s (session %s)", file_path, session_id)
     return {"path": file_path, "content": target.read_text(errors="replace")}
 
 
@@ -115,7 +149,9 @@ def save_workspace_file(session_id: str, file_path: str, request: SaveFileReques
     target = _resolve_workspace_path(session_id, file_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(request.content, encoding="utf-8")
-    return {"path": file_path, "size": target.stat().st_size}
+    size = target.stat().st_size
+    logger.info("Saved file %s (%d bytes, session %s)", file_path, size, session_id)
+    return {"path": file_path, "size": size}
 
 
 @app.delete("/api/sessions/{session_id}/files/{file_path:path}")
@@ -129,6 +165,7 @@ def delete_workspace_file(session_id: str, file_path: str):
         target.rmdir()
     else:
         raise HTTPException(status_code=404, detail="Not found.")
+    logger.info("Deleted %s (session %s)", file_path, session_id)
     return {"deleted": file_path}
 
 
@@ -141,6 +178,7 @@ def run_python_file(session_id: str, request: RunFileRequest):
         raise HTTPException(status_code=400, detail="Only Python files can be executed for now.")
 
     agent, _ = _get_agent(session_id)
+    logger.info("Running %s (session %s)", request.file_path, session_id)
     try:
         workspace = (WORKSPACES / session_id).resolve()
         relative = str(target.relative_to(workspace))
@@ -148,6 +186,7 @@ def run_python_file(session_id: str, request: RunFileRequest):
     except Exception as error:
         logger.exception("Run failed for session %s", session_id)
         raise HTTPException(status_code=500, detail=str(error))
+    logger.info("Run %s finished (session %s)", request.file_path, session_id)
     return {"path": request.file_path, "result": result}
 
 
@@ -173,6 +212,8 @@ def download_workspace(session_id: str):
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> ChatResponse:
     agent, session_id = _get_agent(request.session_id)
+    flag = "confirmed" if request.confirmed else "unconfirmed"
+    logger.info("Chat [%s] session=%s: %.200s", flag, session_id, request.message)
     try:
         response_text = agent.handle(request.message, confirmed=request.confirmed)
     except Exception as error:
@@ -181,6 +222,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
     if response_text.startswith(CONFIRMATION_MARKER):
         action, target = _parse_confirmation(response_text)
+        logger.info("Chat session=%s awaiting confirmation: action=%s target=%s", session_id, action, target)
         return ChatResponse(
             session_id=session_id,
             response=response_text,
@@ -189,6 +231,7 @@ def chat(request: ChatRequest) -> ChatResponse:
             target=target,
         )
 
+    logger.info("Chat session=%s completed (%.400s)", session_id, response_text.replace("\n", " "))
     return ChatResponse(
         session_id=session_id,
         response=response_text,
@@ -210,6 +253,7 @@ def _get_agent(session_id: str) -> tuple[CodingAgent, str]:
                 memory = None
             agent = CodingAgent(memory=memory, root=workspace)
             _sessions[session_id] = (agent, memory)
+            logger.info("Created new session %s (workspace %s)", session_id, workspace)
         return _sessions[session_id][0], session_id
 
 
