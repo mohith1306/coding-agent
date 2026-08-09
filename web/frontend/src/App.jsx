@@ -20,14 +20,82 @@ function parseConfirmation(text) {
   };
 }
 
+function FileTree({ node, depth = 0, onSelect, selected }) {
+  const indent = { paddingLeft: `${depth * 14 + 8}px` };
+  if (node.type === "file") {
+    const isSel = selected === node.path;
+    return (
+      <div
+        className={`file-entry file ${isSel ? "selected" : ""}`}
+        style={indent}
+        onClick={() => onSelect(node.path)}
+        title={`${node.path} (${node.size} bytes)`}
+      >
+        {node.name}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="file-entry dir" style={indent}>
+        {node.name}
+      </div>
+      {node.children.map((child, i) => (
+        <FileTree
+          key={`${child.name}-${i}`}
+          node={{ ...child, path: `${node.path}/${child.name}` }}
+          depth={depth + 1}
+          onSelect={onSelect}
+          selected={selected}
+        />
+      ))}
+    </div>
+  );
+}
+
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState(null);
   const [downloading, setDownloading] = useState(false);
+  const [tree, setTree] = useState(null);
+  const [selected, setSelected] = useState("");
+  const [fileContent, setFileContent] = useState("");
   const endRef = useRef(null);
   const sessionIdRef = useRef(getSessionId());
+
+  async function refreshFiles() {
+    try {
+      const res = await fetch(`/api/sessions/${sessionIdRef.current}/files`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setTree(data.tree);
+      if (selected) {
+        loadFile(selected);
+      }
+    } catch {
+      // ignore transient refresh errors
+    }
+  }
+
+  async function loadFile(path) {
+    setSelected(path);
+    setFileContent("");
+    try {
+      const res = await fetch(
+        `/api/sessions/${sessionIdRef.current}/files/${path}`
+      );
+      if (!res.ok) {
+        setFileContent("(unable to read file)");
+        return;
+      }
+      const data = await res.json();
+      setFileContent(data.content);
+    } catch {
+      setFileContent("(unable to read file)");
+    }
+  }
 
   async function downloadWorkspace() {
     setDownloading(true);
@@ -62,6 +130,11 @@ export default function App() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, pending]);
+
+  useEffect(() => {
+    refreshFiles();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function send(text, confirmed = false) {
     setBusy(true);
@@ -103,6 +176,7 @@ export default function App() {
       ]);
     } finally {
       setBusy(false);
+      refreshFiles();
     }
   }
 
@@ -140,8 +214,35 @@ export default function App() {
         </button>
       </header>
 
-      <main className="chat">
-        <div className="messages">
+      <div className="workspace">
+        <aside className="files-panel">
+          <div className="files-header">Workspace</div>
+          {!tree && <div className="files-empty">No files yet.</div>}
+          {tree && tree.length === 0 && (
+            <div className="files-empty">Empty workspace.</div>
+          )}
+          {tree && tree.length > 0 && (
+            <div className="files-tree">
+              {tree.map((node, i) => (
+                <FileTree
+                  key={`${node.name}-${i}`}
+                  node={{ ...node, path: node.name }}
+                  onSelect={loadFile}
+                  selected={selected}
+                />
+              ))}
+            </div>
+          )}
+          {selected && (
+            <div className="file-preview">
+              <div className="file-preview-name">{selected}</div>
+              <pre>{fileContent}</pre>
+            </div>
+          )}
+        </aside>
+
+        <main className="chat">
+          <div className="messages">
           {messages.length === 0 && (
             <div className="empty">
               Ask me to search, read, create, modify, or run code in this
@@ -189,7 +290,8 @@ export default function App() {
             Send
           </button>
         </form>
-      </main>
+        </main>
+      </div>
     </div>
   );
 }

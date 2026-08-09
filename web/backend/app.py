@@ -55,6 +55,43 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/sessions/{session_id}/files")
+def list_workspace_files(session_id: str):
+    workspace = WORKSPACES / session_id
+    if not workspace.is_dir():
+        raise HTTPException(status_code=404, detail="No workspace for this session yet.")
+
+    def walk(directory: Path) -> list[dict]:
+        entries = []
+        for path in sorted(directory.iterdir()):
+            if path.name == ".git":
+                continue
+            if path.is_dir():
+                entries.append({
+                    "name": path.name,
+                    "type": "directory",
+                    "children": walk(path),
+                })
+            else:
+                entries.append({
+                    "name": path.name,
+                    "type": "file",
+                    "size": path.stat().st_size,
+                })
+        return entries
+
+    return {"session_id": session_id, "tree": walk(workspace)}
+
+
+@app.get("/api/sessions/{session_id}/files/{file_path:path}")
+def read_workspace_file(session_id: str, file_path: str):
+    workspace = (WORKSPACES / session_id).resolve()
+    target = (workspace / file_path).resolve()
+    if not str(target).startswith(str(workspace)) or not target.is_file():
+        raise HTTPException(status_code=404, detail="File not found.")
+    return {"path": file_path, "content": target.read_text(errors="replace")}
+
+
 @app.get("/api/sessions/{session_id}/download")
 def download_workspace(session_id: str):
     workspace = WORKSPACES / session_id
