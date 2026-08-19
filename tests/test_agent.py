@@ -1,5 +1,6 @@
 import subprocess
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -75,7 +76,7 @@ def _intent(name, target="", raw="", confirm=False, args=None, reason=""):
 
 
 def test_confirmation_required_when_not_confirmed(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("delete_file", "x.txt", raw=msg, confirm=True)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("delete_file", "x.txt", raw=msg, confirm=True)
     response = agent.handle("delete x.txt")
     assert response.startswith(CONFIRMATION_MARKER)
     assert "Action: delete_file" in response
@@ -83,7 +84,7 @@ def test_confirmation_required_when_not_confirmed(agent: CodingAgent) -> None:
 
 def test_delete_confirmed(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "x.txt").write_text("data")
-    agent.intent_parser.parse = lambda msg: _intent("delete_file", "x.txt", raw=msg, confirm=True)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("delete_file", "x.txt", raw=msg, confirm=True)
     response = agent.handle("delete x.txt", confirmed=True)
     assert "Deleted" in response
     assert not (workspace / "x.txt").exists()
@@ -93,7 +94,7 @@ def test_delete_confirmed(agent: CodingAgent, workspace: Path) -> None:
 def test_confirmed_replays_cached_intent_when_reparse_fails(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "x.txt").write_text("data")
 
-    def parse(msg: str):
+    def parse(msg: str, history=None):
         if agent._pending_intents.get(msg):
             return _intent("unknown", reason="Intent parser failed: HTTP Error 429")
         return _intent("delete_file", "x.txt", raw=msg, confirm=True)
@@ -131,7 +132,7 @@ def test_resolve_path_case_insensitive(agent: CodingAgent, workspace: Path) -> N
 
 def test_resolve_path_case_insensitive_delete(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "ARCHITECTURE.MD").write_text("# Arch")
-    agent.intent_parser.parse = lambda msg: _intent("delete_file", "architecture.md", raw=msg, confirm=True)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("delete_file", "architecture.md", raw=msg, confirm=True)
     response = agent.handle("delete architecture.md", confirmed=True)
     assert "Deleted" in response
     assert not (workspace / "ARCHITECTURE.MD").exists()
@@ -157,32 +158,32 @@ def test_commit_message_from_dirty(agent: CodingAgent, workspace: Path) -> None:
 
 
 def test_list_tasks_empty(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("list_tasks")
+    agent.intent_parser.parse = lambda msg, history=None: _intent("list_tasks")
     response = agent.handle("show tasks")
     assert "No tasks recorded" in response
 
 
 def test_list_tasks_with_tasks(agent: CodingAgent) -> None:
     agent.memory.tasks.append({"metadata": {"description": "Create x.py", "status": "done", "files_affected": "x.py"}})
-    agent.intent_parser.parse = lambda msg: _intent("list_tasks")
+    agent.intent_parser.parse = lambda msg, history=None: _intent("list_tasks")
     response = agent.handle("show tasks")
     assert "Create x.py" in response
     assert "done" in response
 
 
 def test_remember_and_recall(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("remember", "name", raw=msg, args={"value": "Mohith"})
+    agent.intent_parser.parse = lambda msg, history=None: _intent("remember", "name", raw=msg, args={"value": "Mohith"})
     response = agent.handle("remember my name is Mohith")
     assert "Remembered" in response
     assert agent.memory.get_preference("name") == "Mohith"
 
-    agent.intent_parser.parse = lambda msg: _intent("recall", "", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("recall", "", raw=msg)
     response = agent.handle("what do you remember")
     assert "name: Mohith" in response
 
 
 def test_plan_executes_create(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("plan", "hello.py", raw=msg, confirm=True)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("plan", "hello.py", raw=msg, confirm=True)
     agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
 
     r1 = agent.handle("plan and implement hello.py")
@@ -195,7 +196,7 @@ def test_plan_executes_create(agent: CodingAgent, workspace: Path) -> None:
 
 def test_plan_executes_modify(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "utils.py").write_text("print('old')\n")
-    agent.intent_parser.parse = lambda msg: _intent("plan", "utils.py", raw=msg, confirm=True)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("plan", "utils.py", raw=msg, confirm=True)
     agent.intent_parser.generate = lambda sys_p, user_p: "print('new')\n"
 
     r2 = agent.handle("plan and implement in utils.py", confirmed=True)
@@ -205,7 +206,7 @@ def test_plan_executes_modify(agent: CodingAgent, workspace: Path) -> None:
 
 
 def test_plan_not_executable_answers_via_llm(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("plan", "", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("plan", "", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "1. Set up a login form.\n2. Validate credentials."
     response = agent.handle("plan out how to build a login feature")
     assert "login" in response.lower()
@@ -214,7 +215,7 @@ def test_plan_not_executable_answers_via_llm(agent: CodingAgent) -> None:
 
 
 def test_explain_answers_via_llm(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("explain", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "Use React + Flask + SQLite."
     response = agent.handle("suggest a tech stack")
     assert "react" in response.lower()
@@ -222,14 +223,14 @@ def test_explain_answers_via_llm(agent: CodingAgent) -> None:
 
 
 def test_unknown_answers_via_llm_with_fallback(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("unknown", raw=msg, reason="Ambiguous request")
+    agent.intent_parser.parse = lambda msg, history=None: _intent("unknown", raw=msg, reason="Ambiguous request")
     agent.intent_parser.generate = lambda sys_p, user_p: ""
     response = agent.handle("some gibberish")
     assert "could not parse the intent" in response
 
 
 def test_auto_compaction_triggers_in_handle(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("explain", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "COMPACTED: task summary here."
     agent.compaction.max_tokens = 100
     agent.compaction.keep_recent = 10
@@ -243,7 +244,7 @@ def test_auto_compaction_triggers_in_handle(agent: CodingAgent) -> None:
 
 
 def test_auto_compaction_noop_under_budget(agent: CodingAgent) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("explain", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("explain", raw=msg)
 
     for i in range(3):
         agent.handle(f"request number {i}")
@@ -253,7 +254,7 @@ def test_auto_compaction_noop_under_budget(agent: CodingAgent) -> None:
 
 
 def test_create_python_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_file", "hello.py", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_file", "hello.py", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
 
     r1 = agent.handle("create hello.py")
@@ -269,7 +270,7 @@ def test_create_python_requires_confirmation(agent: CodingAgent, workspace: Path
 
 def test_modify_python_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
     (workspace / "utils.py").write_text("print('old')\n")
-    agent.intent_parser.parse = lambda msg: _intent("modify_code", "utils.py", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("modify_code", "utils.py", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "print('new')\n"
 
     r1 = agent.handle("update utils.py")
@@ -284,7 +285,7 @@ def test_modify_python_requires_confirmation(agent: CodingAgent, workspace: Path
 
 
 def test_create_python_runs_sandbox_test(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_file", "hello.py", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_file", "hello.py", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "print('hello')\n"
 
     agent.terminal = agent._build_terminal()
@@ -303,7 +304,7 @@ def test_create_python_runs_sandbox_test(agent: CodingAgent, workspace: Path) ->
 
 
 def test_create_non_python_no_confirmation(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_file", "notes.txt", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_file", "notes.txt", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: "hello world"
 
     r = agent.handle("create notes.txt")
@@ -313,7 +314,7 @@ def test_create_non_python_no_confirmation(agent: CodingAgent, workspace: Path) 
 
 def test_create_files_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
     targets = ["sliding_window.py", "two_pointers.py", "binary_search.py"]
-    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={"targets": targets})
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_files", "", raw=msg, args={"targets": targets})
     agent.intent_parser.generate = lambda sys_p, user_p: "def run():\n    return 0\n"
 
     r1 = agent.handle("make separate files for sliding window, two pointers, binary search")
@@ -330,7 +331,7 @@ def test_create_files_requires_confirmation(agent: CodingAgent, workspace: Path)
 
 
 def test_create_files_infers_targets(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={})
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_files", "", raw=msg, args={})
     agent.intent_parser.generate = lambda sys_p, user_p: "def run():\n    return 0\n"
 
     agent.handle("make files for sliding window and binary search", confirmed=True)
@@ -339,7 +340,7 @@ def test_create_files_infers_targets(agent: CodingAgent, workspace: Path) -> Non
 
 
 def test_create_project_requires_confirmation(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_project", "", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: (
         '{"files":["server/models/Todo.js","server/routes/todo.js","server/app.js"]}'
     )
@@ -359,7 +360,7 @@ def test_create_project_requires_confirmation(agent: CodingAgent, workspace: Pat
 
 
 def test_create_project_writes_nested_folders(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_project", "", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: (
         '{"files":["client/src/components/Todo.js","server/config/db.js"]}'
     )
@@ -370,8 +371,17 @@ def test_create_project_writes_nested_folders(agent: CodingAgent, workspace: Pat
     assert (workspace / "server/config/db.js").is_file()
 
 
+def test_create_project_surfaces_planning_error(agent: CodingAgent, workspace: Path) -> None:
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_project", "", raw=msg)
+    agent.intent_parser.generate = mock.Mock(side_effect=RuntimeError("provider 429"))
+
+    r = agent.handle("create a calculator app")
+    assert "provider 429" in r
+    assert "could not figure out" not in r
+
+
 def test_create_project_strips_code_fences(agent: CodingAgent, workspace: Path) -> None:
-    agent.intent_parser.parse = lambda msg: _intent("create_project", "", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_project", "", raw=msg)
     agent.intent_parser.generate = lambda sys_p, user_p: (
         '{"files":["server/models/Todo.js","server/routes/todo.js","server/app.js"]}'
         if "architect" in sys_p
@@ -394,7 +404,7 @@ def test_create_file_repaired_on_syntax_error(agent: CodingAgent, workspace: Pat
         calls.append(user_p)
         return clean if len(calls) > 1 else junk
 
-    agent.intent_parser.parse = lambda msg: _intent("create_file", "sliding_window.py", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_file", "sliding_window.py", raw=msg)
     agent.intent_parser.generate = fake_generate
     agent.terminal = agent._build_terminal()
     agent.terminal.run = lambda command, timeout=30: "Exit code: 0\n"
@@ -413,7 +423,7 @@ def test_create_file_repair_failures_reported(agent: CodingAgent, workspace: Pat
         calls.append(user_p)
         return f"{junk}  # attempt {len(calls)}\n"
 
-    agent.intent_parser.parse = lambda msg: _intent("create_file", "sliding_window.py", raw=msg)
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_file", "sliding_window.py", raw=msg)
     agent.intent_parser.generate = fake_generate
     agent.terminal = agent._build_terminal()
     agent.terminal.run = lambda command, timeout=30: "Exit code: 1\nboom\n"
@@ -434,7 +444,7 @@ def test_create_files_repaired_per_file(agent: CodingAgent, workspace: Path) -> 
         return clean if len(calls) > 1 else junk
 
     targets = ["sliding_window.py", "two_pointers.py", "binary_search.py"]
-    agent.intent_parser.parse = lambda msg: _intent("create_files", "", raw=msg, args={"targets": targets})
+    agent.intent_parser.parse = lambda msg, history=None: _intent("create_files", "", raw=msg, args={"targets": targets})
     agent.intent_parser.generate = fake_generate
     agent.terminal = agent._build_terminal()
     agent.terminal.run = lambda command, timeout=30: "Exit code: 0\n"

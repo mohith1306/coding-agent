@@ -196,3 +196,37 @@ def test_stream_reraises_after_partial_output() -> None:
             pass
         else:
             raise AssertionError("expected HTTPError to propagate after partial output")
+
+
+def test_parse_includes_recent_history_in_system_prompt() -> None:
+    parser = _parser_with_fallback()
+    captured = {}
+
+    def fake_call_llm_raw(system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        captured["system_prompt"] = system_prompt
+        captured["user_message"] = user_message
+        return json.dumps({"intent": "create_files", "target": "", "args": {"targets": ["calculator.py", "main.py"]}, "confidence": 0.9})
+
+    with mock.patch.object(parser, "_call_llm_raw", fake_call_llm_raw):
+        intent = parser.parse(
+            "make separate files for this",
+            history=[{"user": "i want to create a calculator app in python", "agent": "plan..."}],
+        )
+
+    assert intent.name == "create_files"
+    assert "Recent conversation context" in captured["system_prompt"]
+    assert "calculator app" in captured["system_prompt"]
+
+
+def test_parse_ignores_empty_history() -> None:
+    parser = _parser_with_fallback()
+    captured = {}
+
+    def fake_call_llm_raw(system_prompt: str, user_message: str, json_mode: bool = False) -> str:
+        captured["system_prompt"] = system_prompt
+        return json.dumps({"intent": "explain", "confidence": 0.9})
+
+    with mock.patch.object(parser, "_call_llm_raw", fake_call_llm_raw):
+        parser.parse("what does this do?", history=[])
+
+    assert "Recent conversation context" not in captured["system_prompt"]

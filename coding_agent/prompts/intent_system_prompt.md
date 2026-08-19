@@ -16,6 +16,7 @@ Rules:
 - "write" + file type = create_file (e.g. "write dfs in python" = create_file with target "dfs.py")
 - "do the same" / "also" / "another" + topic = create_file (user wants a similar new file)
 - "bfs" or "dfs" are algorithms, NOT file extensions or glob patterns
+- "this" / "the project" / "that plan" refer to the most recent user/agent turns in the conversation context below — use them to infer targets and intent
 - Multiple files requested in one message (e.g. "separate files for sliding window, two pointers, binary search") = create_files with args.targets = list of filenames. Infer .py extensions.
 - Full project/app requests (e.g. "create a to-do list project with tech stack", "build a full blog app with express and react") = create_project, NOT plan or create_files. The project structure will be decided separately.
 

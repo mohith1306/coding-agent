@@ -68,7 +68,7 @@ class IntentParser:
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)
 
-    def parse(self, user_message: str) -> Intent:
+    def parse(self, user_message: str, history: Optional[list[dict[str, str]]] = None) -> Intent:
         if not self.api_key:
             return Intent(
                 name="unknown",
@@ -86,7 +86,7 @@ class IntentParser:
             )
 
         try:
-            parsed = self._call_llm(user_message)
+            parsed = self._call_llm(user_message, history=history)
         except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError, ValueError) as error:
             return Intent(
                 name="unknown",
@@ -254,8 +254,11 @@ class IntentParser:
                 if text:
                     yield text
 
-    def _call_llm(self, user_message: str) -> dict[str, object]:
+    def _call_llm(self, user_message: str, history: Optional[list[dict[str, str]]] = None) -> dict[str, object]:
         system_prompt = self.prompt_path.read_text(encoding="utf-8")
+        if history:
+            history_block = self._format_history(history)
+            system_prompt = f"{system_prompt}\n\nRecent conversation context:\n{history_block}"
         content = self._call_llm_raw(system_prompt, user_message, json_mode=True)
         parsed = json.loads(content)
 
@@ -263,6 +266,18 @@ class IntentParser:
             raise ValueError("LLM returned non-object JSON")
 
         return parsed
+
+    def _format_history(self, history: list[dict[str, str]]) -> str:
+        lines = []
+        for entry in history[-6:]:
+            user = str(entry.get("user", "")).strip()
+            agent = str(entry.get("agent", "")).strip()
+            if not user:
+                continue
+            lines.append(f"User: {user}")
+            if agent:
+                lines.append(f"Agent: {agent[:500]}")
+        return "\n".join(lines) if lines else ""
 
     def _call_llm_raw(self, system_prompt: str, user_message: str, json_mode: bool = False) -> str:
         try:

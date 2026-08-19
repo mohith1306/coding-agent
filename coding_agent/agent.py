@@ -54,7 +54,12 @@ class CodingAgent:
 
     def handle(self, user_message: str, confirmed: bool = False) -> str:
         emit({"type": "phase", "message": "Parsing your request…"})
-        intent = self.intent_parser.parse(user_message)
+        history: list[dict[str, str]] = []
+        try:
+            history = self.memory.recent_turns(limit=6)
+        except Exception as error:
+            logger.warning("Failed to load chat history for intent parsing: %s", error)
+        intent = self.intent_parser.parse(user_message, history=history)
         logger.info(
             "Intent: %s target=%r confidence=%s confirmed=%s",
             intent.name,
@@ -78,6 +83,12 @@ class CodingAgent:
             return self._confirmation_prompt(intent)
 
         emit({"type": "intent", "name": intent.name, "target": intent.target or ""})
+        emit({
+            "type": "action",
+            "action": intent.name,
+            "target": intent.target or "",
+            "bullets": self._action_bullets(intent),
+        })
         emit({"type": "phase", "message": f"Performing {intent.name}…"})
         context = self.context_builder.build(user_message)
         tool_response = self._handle_intent(intent, context, confirmed=confirmed)
@@ -108,6 +119,35 @@ class CodingAgent:
             except Exception as error:
                 logger.warning("Failed to initialize Daytona sandbox, falling back to local: %s", error)
         return TerminalSandbox(self.root)
+
+    def _action_bullets(self, intent: Intent) -> list[str]:
+        target = f" `{intent.target}`" if intent.target else ""
+        if intent.name in {"create_file", "create_files", "create_project"}:
+            return [
+                f"I’ll generate the requested file content{target}.",
+                "I’ll write the files into the project workspace.",
+                "I’ll verify the result and run a quick test where applicable.",
+            ]
+        if intent.name == "modify_code":
+            return [
+                f"I’ll inspect the current contents of{target} first.",
+                "I’ll generate the smallest change that addresses your request.",
+                "I’ll verify the updated file and repair it if a check fails.",
+            ]
+        if intent.name in {"run_command", "run_file"}:
+            return [
+                "I’ll run the requested command in the project workspace.",
+                "I’ll stream its output so you can see what happens.",
+            ]
+        if intent.name in {"read_file", "search_code", "list_files"}:
+            return [
+                f"I’ll inspect the project{target} to gather the relevant context.",
+                "I’ll report the useful results without changing files.",
+            ]
+        return [
+            f"I’ll handle this as a `{intent.name}` request.",
+            "I’ll explain the result once the action completes.",
+        ]
 
     def _maybe_compact(self) -> None:
         try:
@@ -766,7 +806,7 @@ class CodingAgent:
 
         return "Created multiple files:\n\n" + "\n\n---\n\n".join(parts)
 
-    def _generate_project_targets(self, raw_message: str, context: Optional[AgentContext] = None) -> list[str]:
+    def _generate_project_targets(self, raw_message: str, context: Optional[AgentContext] = None) -> tuple[list[str], str]:
         system_prompt = PROJECT_MANIFEST_PROMPT.read_text(encoding="utf-8")
         ctx_block = ""
         if context:
@@ -775,24 +815,33 @@ class CodingAgent:
             result = self.intent_parser.generate(system_prompt, raw_message + ctx_block)
         except Exception as error:
             logger.warning("Failed to generate project structure: %s", error)
-            return []
+            return [], f"Project structure generation failed: {error}"
+
         try:
             parsed = json.loads(result)
             files = parsed.get("files", []) if isinstance(parsed, dict) else parsed
-        except (json.JSONDecodeError, AttributeError):
-            files = []
-        return [str(f).strip() for f in files if str(f).strip()]
+        except (json.JSONDecodeError, AttributeError) as error:
+            logger.warning("Project manifest was not valid JSON: %s", error)
+            return [], "The project planner did not return a valid file list."
+
+        if not isinstance(files, list) or not files:
+            return [], "The project planner returned no files for the request."
+
+        return [str(f).strip() for f in files if str(f).strip()], ""
 
     def _handle_create_project(self, intent: Intent, context: Optional[AgentContext] = None, confirmed: bool = False) -> str:
         emit({"type": "phase", "message": "Planning project structure…"})
         if confirmed:
-            targets = self._pending_project_targets.get(intent.raw_message) or self._generate_project_targets(intent.raw_message, context)
+            cached_targets = self._pending_project_targets.get(intent.raw_message)
+            targets, error = cached_targets, ""
+            if not targets:
+                targets, error = self._generate_project_targets(intent.raw_message, context)
         else:
-            targets = self._generate_project_targets(intent.raw_message, context)
+            targets, error = self._generate_project_targets(intent.raw_message, context)
             if targets:
                 self._pending_project_targets[intent.raw_message] = targets
         if not targets:
-            return "I could not figure out a file structure for that project. Please name the tech stack or files you want."
+            return error or "I could not figure out a file structure for that project. Please name the tech stack or files you want."
 
         cached = self._pending_edits
 

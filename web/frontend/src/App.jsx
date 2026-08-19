@@ -7,6 +7,7 @@ function makeTab(id = crypto.randomUUID(), title = "New session") {
   return {
     id,
     title,
+    project: null,
     input: "",
     messages: [],
     pending: null,
@@ -170,10 +171,233 @@ function FileTree({ node, depth = 0, onSelect, selected, open, onToggle, onDelet
   );
 }
 
+function ProjectPicker({ onSelect, onClose, cwd }) {
+  const [projects, setProjects] = useState(null);
+  const [custom, setCustom] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [mode, setMode] = useState("recent");
+  const [browsePath, setBrowsePath] = useState("");
+  const [browseParent, setBrowseParent] = useState(null);
+  const [browseDirs, setBrowseDirs] = useState(null);
+  const [browseLoading, setBrowseLoading] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/projects")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Failed to list projects"))))
+      .then((data) => {
+        if (!alive) return;
+        setProjects(data.projects || []);
+        if (!browsePath && data.cwd) {
+          setBrowsePath(data.cwd);
+        }
+      })
+      .catch((err) => alive && setError(err.message));
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function openPath(path) {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/projects/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: path }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to open project");
+      onSelect(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadBrowse(dirPath) {
+    setBrowseLoading(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/projects/browse?path=${encodeURIComponent(dirPath)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Failed to browse directory");
+      setBrowsePath(data.path);
+      setBrowseParent(data.parent);
+      setBrowseDirs(data.dirs || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBrowseLoading(false);
+    }
+  }
+
+  function handleCustom(e) {
+    e.preventDefault();
+    const path = custom.trim();
+    if (path) openPath(path);
+  }
+
+  function switchMode(next) {
+    setMode(next);
+    setError("");
+    if (next === "browse" && !browseDirs && browsePath) {
+      loadBrowse(browsePath);
+    }
+  }
+
+  return (
+    <div className="picker-overlay">
+      <div className="picker">
+        <div className="picker-header">
+          <h2>Open a project</h2>
+          {onClose && (
+            <button className="picker-close" onClick={onClose} title="Close">
+              ×
+            </button>
+          )}
+        </div>
+        <p className="picker-hint">
+          Choose a project folder from your machine. The agent will read, create,
+          modify, and run code inside it.
+        </p>
+
+        <div className="picker-tabs">
+          <button
+            className={`picker-tab ${mode === "recent" ? "active" : ""}`}
+            onClick={() => switchMode("recent")}
+          >
+            Recent projects
+          </button>
+          <button
+            className={`picker-tab ${mode === "browse" ? "active" : ""}`}
+            onClick={() => switchMode("browse")}
+          >
+            Browse…
+          </button>
+        </div>
+
+        {error && <div className="picker-error">{error}</div>}
+
+        {mode === "browse" && (
+          <div className="picker-browse">
+            <form
+              className="picker-custom"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (browsePath.trim()) loadBrowse(browsePath.trim());
+              }}
+            >
+              <input
+                value={browsePath}
+                onChange={(e) => setBrowsePath(e.target.value)}
+                placeholder="Type a folder path to browse…"
+                spellCheck={false}
+              />
+              <button type="submit" disabled={browseLoading}>
+                {browseLoading ? "Loading…" : "Go"}
+              </button>
+            </form>
+            {browseParent && (
+              <button
+                className="picker-up"
+                onClick={() => loadBrowse(browseParent)}
+                disabled={browseLoading}
+              >
+                ↑ Up one level
+              </button>
+            )}
+            <div className="picker-list">
+              {browseLoading && <div className="picker-loading">Loading folder…</div>}
+              {!browseLoading && browseDirs && browseDirs.length === 0 && (
+                <div className="picker-loading">No subfolders here.</div>
+              )}
+              {!browseLoading &&
+                browseDirs &&
+                browseDirs.map((d) => (
+                  <div key={d.path} className="picker-browse-item">
+                    <button
+                      className="picker-item"
+                      onClick={() => loadBrowse(d.path)}
+                      title={d.path}
+                    >
+                      <span className="picker-item-icon">
+                        {d.is_project ? "📦" : "📁"}
+                      </span>
+                      <span className="picker-item-name">{d.name}</span>
+                      <span className="picker-item-path">
+                        {d.is_project ? "project" : d.path}
+                      </span>
+                    </button>
+                    {d.is_project && (
+                      <button
+                        className="picker-open"
+                        onClick={() => openPath(d.path)}
+                        disabled={loading}
+                      >
+                        Open
+                      </button>
+                    )}
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
+
+        {mode === "recent" && (
+          <>
+            <form className="picker-custom" onSubmit={handleCustom}>
+              <input
+                value={custom}
+                onChange={(e) => setCustom(e.target.value)}
+                placeholder={cwd ? `Type a path (e.g. ${cwd})` : "Type a full path…"}
+                spellCheck={false}
+              />
+              <button type="submit" disabled={loading || !custom.trim()}>
+                {loading ? "Opening…" : "Open"}
+              </button>
+            </form>
+
+            <div className="picker-divider">
+              <span>Recent projects</span>
+            </div>
+
+            <div className="picker-list">
+              {!projects && !error && <div className="picker-loading">Scanning your directories…</div>}
+              {projects && projects.length === 0 && (
+                <div className="picker-loading">No projects found. Try the Browse tab or type a path.</div>
+              )}
+              {projects &&
+                projects.map((p) => (
+                  <button
+                    key={p.path}
+                    className="picker-item"
+                    onClick={() => openPath(p.path)}
+                    disabled={loading}
+                    title={p.path}
+                  >
+                    <span className="picker-item-icon">📁</span>
+                    <span className="picker-item-name">{p.name}</span>
+                    <span className="picker-item-path">{p.path}</span>
+                  </button>
+                ))}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [tabs, setTabs] = useState(loadTabs);
   const [activeTab, setActiveTab] = useState(0);
   const [downloading, setDownloading] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [cwd, setCwd] = useState("");
   const endRef = useRef(null);
   const runOutputRef = useRef(null);
   const activeIdRef = useRef(null);
@@ -181,6 +405,19 @@ export default function App() {
   const safeIndex = Math.min(activeTab, Math.max(tabs.length - 1, 0));
   const tab = tabs[safeIndex] || makeTab();
   activeIdRef.current = tab.id;
+
+  useEffect(() => {
+    fetch("/api/projects")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data && setCwd(data.cwd || ""));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (tab.id && !tab.project && !tab.busy) {
+      setPickerOpen(true);
+    }
+  }, [tab.id, tab.project, tab.busy]);
 
   useEffect(() => {
     const saved = tabs.map((t) => ({
@@ -224,8 +461,53 @@ export default function App() {
     }
   }
 
+  async function bindProject(project) {
+    const id = activeIdRef.current;
+    setPickerOpen(false);
+    patchTab(id, {
+      project,
+      title: project.name || id.slice(0, 8),
+      tree: null,
+      selected: "",
+      fileContent: "",
+      dirty: false,
+      runResult: "",
+      openFolders: [],
+    });
+    try {
+      const res = await fetch(`/api/sessions/${id}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: project.path }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || "Failed to open project");
+      }
+      patchTab(id, {
+        messages: [
+          ...(tab.messages || []),
+          {
+            role: "agent",
+            text: `Opened project **${project.name}** at \`${project.path}\`. What would you like to work on?`,
+          },
+        ],
+      });
+    } catch (error) {
+      patchTab(id, {
+        messages: [
+          ...(tab.messages || []),
+          { role: "agent", text: `Error opening project: ${error.message}` },
+        ],
+      });
+    }
+    refreshFiles();
+  }
+
   async function refreshFiles() {
     const id = activeIdRef.current;
+    const target = tabs.find((t) => t.id === id);
+    if (target && !target.project) return;
     try {
       const res = await fetch(`/api/sessions/${id}/files`);
       if (!res.ok) return;
@@ -238,7 +520,6 @@ export default function App() {
       // ignore transient refresh errors
     }
   }
-
   function toggleFolder(path) {
     const id = tab.id;
     setTabs((prev) =>
@@ -445,6 +726,7 @@ export default function App() {
     setTabs((prev) => [...prev, fresh]);
     setActiveTab(tabs.length);
     ensureSession(fresh.id);
+    setPickerOpen(true);
   }
 
   function closeTab(index) {
@@ -462,6 +744,7 @@ export default function App() {
     } else if (index < safeIndex) {
       setActiveTab(safeIndex - 1);
     }
+    fetch(`/api/sessions/${target.id}`, { method: "DELETE" }).catch(() => {});
   }
 
   async function send(text, confirmed = false) {
@@ -470,7 +753,7 @@ export default function App() {
     patchTab(id, { busy: true, pending: null, status: "Connecting…" });
 
     if (!confirmed) {
-      if ((tab.title || "").startsWith("New session")) {
+      if ((tab.title || "").startsWith("New session") && tab.project) {
         patchTab(id, { title: text.slice(0, 24) || "New session" });
       }
     }
@@ -515,6 +798,13 @@ export default function App() {
       await readSSE(res, (event) => {
         if (event.type === "chunk") {
           updateLive((m) => ({ ...m, text: (m.text || "") + event.text }));
+        } else if (event.type === "action") {
+          updateLive((m) => ({
+            ...m,
+            action: event.action,
+            actionTarget: event.target,
+            bullets: Array.isArray(event.bullets) ? event.bullets : [],
+          }));
         } else if (event.type === "phase") {
           patchTab(id, { status: event.message });
         } else if (event.type === "confirmation") {
@@ -536,7 +826,7 @@ export default function App() {
             )
           );
         } else if (event.type === "done") {
-          updateLive(() => ({ role: "agent", text: event.response }));
+          updateLive((m) => ({ ...m, role: "agent", text: event.response, streaming: false }));
           patchTab(id, { status: "" });
         } else if (event.type === "error") {
           updateLive(() => ({ role: "agent", text: `Error: ${event.message}` }));
@@ -575,6 +865,19 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>Coding Agent</h1>
+        {tab.project ? (
+          <button
+            onClick={() => setPickerOpen(true)}
+            className="btn project-switch"
+            title={tab.project.path}
+          >
+            📁 {tab.project.name}
+          </button>
+        ) : (
+          <button onClick={() => setPickerOpen(true)} className="btn project-switch">
+            Open project…
+          </button>
+        )}
         <button
           onClick={downloadWorkspace}
           className="btn download"
@@ -711,8 +1014,9 @@ export default function App() {
           <div className="messages">
           {tab.messages.length === 0 && (
             <div className="empty">
-              Ask me to search, read, create, modify, or run code in this
-              workspace.
+              {tab.project
+                ? "Ask me to search, read, create, modify, or run code in this project."
+                : "Open a project to start working with the coding agent."}
             </div>
           )}
           {tab.messages.map((msg, i) => (
@@ -720,6 +1024,13 @@ export default function App() {
               key={i}
               className={`msg ${msg.role}${msg.streaming ? " streaming" : ""}`}
             >
+              {msg.bullets?.length > 0 && (
+                <ul className="action-bullets">
+                  {msg.bullets.map((bullet, bulletIndex) => (
+                    <li key={`${bullet}-${bulletIndex}`}>{bullet}</li>
+                  ))}
+                </ul>
+              )}
               <pre>
                 {msg.text}
                 {msg.streaming && <span className="caret" />}
@@ -760,16 +1071,20 @@ export default function App() {
           <input
             value={tab.input}
             onChange={(e) => patchTab(tab.id, { input: e.target.value })}
-            placeholder="Type your request…"
-            disabled={tab.busy}
+            placeholder={tab.project ? "Type your request…" : "Open a project first…"}
+            disabled={tab.busy || !tab.project}
             autoFocus
           />
-          <button type="submit" disabled={tab.busy || !tab.input.trim()}>
+          <button type="submit" disabled={tab.busy || !tab.input.trim() || !tab.project}>
             Send
           </button>
         </form>
         </main>
       </div>
+
+      {pickerOpen && (
+        <ProjectPicker onSelect={bindProject} onClose={() => setPickerOpen(false)} cwd={cwd} />
+      )}
     </div>
   );
 }

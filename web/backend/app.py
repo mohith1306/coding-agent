@@ -6,6 +6,7 @@ import os
 import queue
 import signal
 import subprocess
+import sys
 import time
 import threading
 import uuid
@@ -21,6 +22,11 @@ from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+
+# Allow `uvicorn app:app` when launched from web/backend as well as the repo root.
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.events import reset_event_sink, set_event_sink
@@ -44,11 +50,13 @@ app = FastAPI(title="Coding Agent API", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -66,9 +74,37 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(RequestLoggingMiddleware)
 
-ROOT = Path(__file__).resolve().parents[2]
 WORKSPACES = ROOT / "web" / "workspaces"
 WORKSPACES.mkdir(parents=True, exist_ok=True)
+
+PROJECT_MARKERS = (
+    ".git",
+    ".hg",
+    ".svn",
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "go.mod",
+    "Cargo.toml",
+    "pom.xml",
+    "composer.json",
+    "Cargo.lock",
+    "Gemfile",
+)
+
+# Directories scanned for candidate projects when the user opens the picker.
+PROJECT_SCAN_DIRS = [
+    Path.home(),
+    Path.home() / "dev",
+    Path.home() / "projects",
+    Path.home() / "code",
+    Path.home() / "src",
+    Path.home() / "workspace",
+    Path.home() / "Documents",
+    Path.home() / "Desktop",
+    Path.home() / "Developer",
+]
 
 _lock = threading.Lock()
 _sessions: dict[str, tuple[CodingAgent, MemoryStore]] = {}
@@ -102,8 +138,117 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+def _is_project(dir_path: Path) -> bool:
+    try:
+        return any((dir_path / marker).exists() for marker in PROJECT_MARKERS)
+    except OSError:
+        return False
+
+
+def _scan_projects(max_depth: int = 2, max_results: int = 200) -> list[dict]:
+    """Find git repos / project dirs under common dev locations.
+
+    Projects are de-duplicated (a nested repo under a scanned parent is kept,
+    but a scanned parent that itself is a project shadows its own parent dir).
+    """
+    found: dict[str, Path] = {}
+    visited: set[Path] = set()
+
+    def walk(base: Path, depth: int) -> None:
+        try:
+            entries = sorted(base.iterdir(), key=lambda p: p.name.lower())
+        except (OSError, PermissionError):
+            return
+        for entry in entries:
+            if entry.name.startswith(".") and entry.name not in {".git"}:
+                continue
+            if not entry.is_dir():
+                continue
+            resolved = entry.resolve()
+            if resolved in visited:
+                continue
+            visited.add(resolved)
+            if _is_project(entry):
+                found[entry.name] = resolved
+            elif depth < max_depth:
+                walk(entry, depth + 1)
+            if len(found) >= max_results:
+                return
+
+    for base in PROJECT_SCAN_DIRS:
+        if base.is_dir():
+            walk(base, 0)
+
+    # Fallback: the repo's own directory is a project.
+    if ROOT.is_dir() and str(ROOT.resolve()) not in {str(p.resolve()) for p in found.values()}:
+        if _is_project(ROOT):
+            found[ROOT.name] = ROOT.resolve()
+
+    projects = []
+    for name in sorted(found):
+        projects.append({"name": name, "path": str(found[name])})
+    return projects[:max_results]
+
+
+@app.get("/api/projects")
+def list_projects() -> dict:
+    return {
+        "projects": _scan_projects(),
+        "cwd": str(Path.cwd()),
+        "scan_dirs": [str(p) for p in PROJECT_SCAN_DIRS if p.is_dir()],
+    }
+
+
+@app.get("/api/projects/browse")
+def browse_projects(path: str = "") -> dict:
+    """List the subdirectories of a folder so the UI can browse for a project."""
+    raw = path.strip() or str(Path.home())
+    current = Path(raw).expanduser().resolve()
+    if not current.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {raw}")
+
+    children = []
+    for entry in sorted(current.iterdir(), key=lambda p: (p.name.startswith("."), p.name.lower())):
+        if not entry.is_dir():
+            continue
+        if entry.name in {".git", "node_modules", "__pycache__", ".venv", "venv", ".DS_Store"}:
+            continue
+        try:
+            is_project = _is_project(entry)
+        except OSError:
+            is_project = False
+        children.append({
+            "name": entry.name,
+            "path": str(entry.resolve()),
+            "type": "directory",
+            "is_project": is_project,
+        })
+
+    parent = str(current.parent) if current.parent != current else None
+    return {
+        "path": str(current),
+        "name": current.name,
+        "parent": parent,
+        "dirs": children,
+    }
+
+
+@app.post("/api/projects/open")
+def open_project(request: ChatRequest) -> dict:
+    """Resolve a user-supplied path into a valid project root."""
+    raw = request.message.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Provide a project path.")
+    candidate = Path(raw).expanduser().resolve()
+    if not candidate.is_dir():
+        raise HTTPException(status_code=400, detail=f"Not a directory: {raw}")
+    if not _is_project(candidate):
+        raise HTTPException(status_code=400, detail=f"No project detected at {raw} (no .git, package.json, requirements.txt, etc.).")
+    return {"name": candidate.name, "path": str(candidate)}
+
+
 def _resolve_workspace_path(session_id: str, file_path: str) -> Path:
-    workspace = (WORKSPACES / session_id).resolve()
+    workspace = _session_workspace(session_id).resolve()
     if not workspace.is_dir():
         raise HTTPException(status_code=404, detail="No workspace for this session yet.")
     target = (workspace / file_path).resolve()
@@ -114,7 +259,7 @@ def _resolve_workspace_path(session_id: str, file_path: str) -> Path:
 
 @app.get("/api/sessions/{session_id}/files")
 def list_workspace_files(session_id: str):
-    workspace = WORKSPACES / session_id
+    workspace = _session_workspace(session_id)
     if not workspace.is_dir():
         raise HTTPException(status_code=404, detail="No workspace for this session yet.")
 
@@ -123,7 +268,7 @@ def list_workspace_files(session_id: str):
     def walk(directory: Path) -> list[dict]:
         entries = []
         for path in sorted(directory.iterdir()):
-            if path.name == ".git":
+            if path.name in {".git", "node_modules", "__pycache__", ".venv", "venv"}:
                 continue
             if path.is_dir():
                 entries.append({
@@ -139,12 +284,12 @@ def list_workspace_files(session_id: str):
                 })
         return entries
 
-    return {"session_id": session_id, "tree": walk(workspace)}
+    return {"session_id": session_id, "root": str(workspace), "tree": walk(workspace)}
 
 
 @app.get("/api/sessions/{session_id}/files/{file_path:path}")
 def read_workspace_file(session_id: str, file_path: str):
-    workspace = (WORKSPACES / session_id).resolve()
+    workspace = _session_workspace(session_id).resolve()
     target = (workspace / file_path).resolve()
     if not str(target).startswith(str(workspace)) or not target.is_file():
         raise HTTPException(status_code=404, detail="File not found.")
@@ -260,7 +405,7 @@ def stop_run(session_id: str):
 
 @app.get("/api/sessions/{session_id}/download")
 def download_workspace(session_id: str):
-    workspace = WORKSPACES / session_id
+    workspace = _session_workspace(session_id)
     if not workspace.is_dir():
         raise HTTPException(status_code=404, detail="No workspace for this session yet.")
 
@@ -278,11 +423,35 @@ def download_workspace(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}")
-def create_session(session_id: str):
-    agent, resolved = _get_agent(session_id)
-    workspace = WORKSPACES / resolved
+def create_session(session_id: str, request: Optional[ChatRequest] = None):
+    root: Optional[Path] = None
+    if request is not None and request.message.strip():
+        raw = request.message.strip()
+        candidate = Path(raw).expanduser().resolve()
+        if not candidate.is_dir():
+            raise HTTPException(status_code=400, detail=f"Not a directory: {raw}")
+        if not _is_project(candidate):
+            raise HTTPException(status_code=400, detail=f"No project detected at {raw}.")
+        root = candidate
+    agent, resolved = _get_agent(session_id, root=root)
+    workspace = _session_workspace(resolved)
     logger.info("Ensured session %s (workspace %s)", resolved, workspace)
     return {"session_id": resolved, "workspace": str(workspace)}
+
+
+@app.delete("/api/sessions/{session_id}")
+def delete_session(session_id: str):
+    """Release a session: close its terminal (freeing any Daytona sandbox)."""
+    with _lock:
+        agent, _ = _sessions.pop(session_id, (None, None))
+    if agent is None:
+        return {"deleted": False}
+    try:
+        agent.terminal.close()
+    except Exception as error:
+        logger.warning("Failed to close terminal for session %s: %s", session_id, error)
+    logger.info("Deleted session %s", session_id)
+    return {"deleted": True}
 
 
 @app.post("/api/chat")
@@ -371,14 +540,19 @@ def _sse_response(events: queue.Queue) -> StreamingResponse:
     )
 
 
-def _get_agent(session_id: str) -> tuple[CodingAgent, str]:
+def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgent, str]:
     if not session_id:
         session_id = str(uuid.uuid4())
 
     with _lock:
         if session_id not in _sessions:
-            workspace = WORKSPACES / session_id
-            workspace.mkdir(parents=True, exist_ok=True)
+            if root is None:
+                workspace = WORKSPACES / session_id
+                workspace.mkdir(parents=True, exist_ok=True)
+            else:
+                workspace = root
+                if not workspace.is_dir():
+                    raise HTTPException(status_code=400, detail=f"Not a directory: {workspace}")
             try:
                 memory = MemoryStore()
             except RuntimeError:
@@ -387,6 +561,32 @@ def _get_agent(session_id: str) -> tuple[CodingAgent, str]:
             _sessions[session_id] = (agent, memory)
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
         return _sessions[session_id][0], session_id
+
+
+def _session_workspace(session_id: str) -> Path:
+    """The directory the session's agent operates on (project root or sandbox)."""
+    with _lock:
+        if session_id in _sessions:
+            return _sessions[session_id][0].root
+    return WORKSPACES / session_id
+
+
+def _close_all_sessions() -> None:
+    with _lock:
+        session_ids = list(_sessions.keys())
+        for session_id in session_ids:
+            agent, _ = _sessions.pop(session_id, (None, None))
+            if agent is not None:
+                try:
+                    agent.terminal.close()
+                except Exception as error:
+                    logger.warning("Failed to close terminal for session %s: %s", session_id, error)
+
+
+@app.on_event("shutdown")
+def shutdown_hook() -> None:
+    logger.info("Shutting down; closing %d session(s)", len(_sessions))
+    _close_all_sessions()
 
 
 def _parse_confirmation(response_text: str) -> tuple[str, str]:

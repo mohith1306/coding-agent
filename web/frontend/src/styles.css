@@ -41,6 +41,248 @@ body {
   cursor: default;
 }
 
+.btn.project-switch {
+  background: #1f2937;
+  border: 1px solid #374151;
+  color: #93c5fd;
+  font-size: 13px;
+  font-weight: 500;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 16, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.picker {
+  width: min(640px, 94vw);
+  max-height: 82vh;
+  background: #161a20;
+  border: 1px solid #2a2f38;
+  border-radius: 14px;
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.picker-header h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.picker-close {
+  background: none;
+  border: none;
+  color: #9ca3af;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.picker-hint {
+  color: #9ca3af;
+  font-size: 13px;
+  margin: 8px 0 14px;
+}
+
+.picker-error {
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+.picker-custom {
+  display: flex;
+  gap: 8px;
+}
+
+.picker-custom input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid #2a2f38;
+  border-radius: 8px;
+  background: #1c1f26;
+  color: #e6e6e6;
+  font-size: 13px;
+}
+
+.picker-custom input:focus {
+  outline: none;
+  border-color: #2563eb;
+}
+
+.picker-custom button {
+  padding: 10px 18px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.picker-custom button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.picker-divider {
+  margin: 18px 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+}
+
+.picker-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.picker-tab {
+  padding: 8px 14px;
+  border: 1px solid #2a2f38;
+  border-radius: 8px;
+  background: #1c1f26;
+  color: #9ca3af;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.picker-tab.active {
+  background: #2563eb;
+  border-color: #2563eb;
+  color: #fff;
+}
+
+.picker-browse {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.picker-up {
+  align-self: flex-start;
+  padding: 6px 12px;
+  border: 1px solid #2a2f38;
+  border-radius: 8px;
+  background: #1c1f26;
+  color: #93c5fd;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.picker-up:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.picker-browse-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.picker-browse-item .picker-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.picker-open {
+  padding: 8px 14px;
+  border: none;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.picker-open:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.picker-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker-loading {
+  color: #6b7280;
+  font-size: 13px;
+  padding: 8px 0;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #e6e6e6;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.picker-item:hover {
+  background: #1f242c;
+  border-color: #2a2f38;
+}
+
+.picker-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.picker-item-icon {
+  font-size: 16px;
+}
+
+.picker-item-name {
+  font-weight: 500;
+  color: #e6e6e6;
+}
+
+.picker-item-path {
+  color: #6b7280;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
 .tab-bar {
   display: flex;
   align-items: center;
@@ -417,6 +659,18 @@ body {
   font-family: inherit;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.action-bullets {
+  margin: 0 0 10px;
+  padding-left: 18px;
+  color: #a7f3d0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.action-bullets li + li {
+  margin-top: 3px;
 }
 
 .confirm-preview {

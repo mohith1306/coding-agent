@@ -180,6 +180,12 @@ def test_chat_stream_emits_events(client, sid):
     def fake_handle(message, confirmed=False):
         from coding_agent.events import emit
 
+        emit({
+            "type": "action",
+            "action": "modify_code",
+            "target": "app.py",
+            "bullets": ["Inspect the file", "Apply the change"],
+        })
         emit({"type": "phase", "message": "Working…"})
         emit({"type": "chunk", "text": "Hel"})
         emit({"type": "chunk", "text": "lo"})
@@ -191,11 +197,14 @@ def test_chat_stream_emits_events(client, sid):
     assert res.status_code == 200
     events = parse_sse(res.content.decode("utf-8"))
     types = [e["type"] for e in events]
+    assert "action" in types
     assert "phase" in types
     assert "chunk" in types
     assert types[-1] == "done"
     done = next(e for e in events if e["type"] == "done")
     assert done["response"] == "Hello"
+    action = next(e for e in events if e["type"] == "action")
+    assert action["bullets"] == ["Inspect the file", "Apply the change"]
 
 
 def test_chat_stream_emits_confirmation(client, sid):
@@ -246,3 +255,115 @@ def test_create_session_is_idempotent(client):
     assert res1.status_code == 200
     assert res2.status_code == 200
     assert res2.json()["session_id"] == "dup"
+
+
+def _make_project(tmp_path: Path, name: str) -> Path:
+    project = tmp_path / name
+    (project / ".git").mkdir(parents=True)
+    (project / "README.md").write_text("# project\n")
+    return project
+
+
+def test_list_projects_scans_for_git_repos(client, tmp_path, monkeypatch):
+    _make_project(tmp_path, "proj-a")
+    _make_project(tmp_path, "proj-b")
+    (tmp_path / "not-a-project").mkdir()
+    monkeypatch.setattr(appmod, "PROJECT_SCAN_DIRS", [tmp_path])
+
+    res = client.get("/api/projects")
+    assert res.status_code == 200
+    names = [p["name"] for p in res.json()["projects"]]
+    assert "proj-a" in names
+    assert "proj-b" in names
+    assert "not-a-project" not in names
+
+
+def test_open_project_accepts_valid_path(client, tmp_path):
+    project = _make_project(tmp_path, "proj-c")
+    res = client.post("/api/projects/open", json={"message": str(project)})
+    assert res.status_code == 200
+    assert res.json()["name"] == "proj-c"
+    assert res.json()["path"] == str(project.resolve())
+
+
+def test_open_project_rejects_non_dir(client, tmp_path):
+    res = client.post("/api/projects/open", json={"message": str(tmp_path / "nope")})
+    assert res.status_code == 400
+    assert "Not a directory" in res.json()["detail"]
+
+
+def test_open_project_rejects_non_project_dir(client, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    res = client.post("/api/projects/open", json={"message": str(plain)})
+    assert res.status_code == 400
+    assert "No project detected" in res.json()["detail"]
+
+
+def test_create_session_binds_to_project_root(client, tmp_path):
+    project = _make_project(tmp_path, "bound")
+    res = client.post(
+        "/api/sessions/bound-session",
+        json={"message": str(project)},
+    )
+    assert res.status_code == 200
+    assert res.json()["workspace"] == str(project.resolve())
+
+    files = client.get("/api/sessions/bound-session/files")
+    assert files.status_code == 200
+    assert files.json()["root"] == str(project.resolve())
+    names = [e["name"] for e in files.json()["tree"]]
+    assert "README.md" in names
+
+
+def test_create_session_rejects_non_project_root(client, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    res = client.post("/api/sessions/bad-root", json={"message": str(plain)})
+    assert res.status_code == 400
+    assert "No project detected" in res.json()["detail"]
+
+
+def test_bound_session_reads_project_file(client, tmp_path):
+    project = _make_project(tmp_path, "readme-proj")
+    client.post("/api/sessions/rp", json={"message": str(project)})
+
+    res = client.get("/api/sessions/rp/files/README.md")
+    assert res.status_code == 200
+    assert res.json()["content"] == "# project\n"
+
+
+def test_browse_lists_subdirs_and_flags_projects(client, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    _make_project(root, "app")
+    (root / "misc").mkdir()
+
+    res = client.get(f"/api/projects/browse?path={root}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["path"] == str(root.resolve())
+    names = {d["name"]: d for d in body["dirs"]}
+    assert "app" in names
+    assert names["app"]["is_project"] is True
+    assert "misc" in names
+    assert names["misc"]["is_project"] is False
+
+
+def test_browse_rejects_non_dir(client, tmp_path):
+    res = client.get(f"/api/projects/browse?path={tmp_path / 'ghost'}")
+    assert res.status_code == 400
+    assert "Not a directory" in res.json()["detail"]
+
+
+def test_browse_skips_ignored_dirs(client, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "node_modules").mkdir()
+    (root / "keep").mkdir()
+
+    res = client.get(f"/api/projects/browse?path={root}")
+    assert res.status_code == 200
+    names = [d["name"] for d in res.json()["dirs"]]
+    assert "node_modules" not in names
+    assert "keep" in names

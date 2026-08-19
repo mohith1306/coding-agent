@@ -81,6 +81,12 @@ python3 -m pip install -r web/backend/requirements.txt
 python3 -m uvicorn web.backend.app:app --reload --port 8000
 ```
 
+If your terminal is already in `web/backend`, use:
+
+```bash
+python3 -m uvicorn app:app --reload --port 8000
+```
+
 Terminal 2 — frontend:
 
 ```bash
@@ -89,7 +95,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. Vite proxies `/api` and `/health` to the backend.
+Open http://localhost:3000. Vite proxies `/api` and `/health` to the backend.
 
 ### Run the full app (single process, production build)
 
