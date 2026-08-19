@@ -6,6 +6,26 @@ from urllib.error import HTTPError
 from coding_agent.intent import IntentParser
 
 
+def test_parser_loads_env_from_parent_directory(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "project"
+    child = root / "web" / "backend"
+    child.mkdir(parents=True)
+    (root / ".env").write_text(
+        "LLM_PROVIDER=openrouter\nOPENROUTER_API_KEY=sk-or-v1-test\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(child)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    parser = IntentParser()
+
+    assert parser.provider == "openrouter"
+    assert parser.api_key == "sk-or-v1-test"
+
+
 def _parser_with_fallback() -> IntentParser:
     parser = IntentParser()
     parser.provider = "groq"

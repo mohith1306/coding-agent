@@ -67,6 +67,13 @@ class FakeMemory:
 @pytest.fixture
 def agent(workspace: Path, monkeypatch) -> CodingAgent:
     monkeypatch.chdir(workspace)
+    # Keep tests hermetic: don't let the repo .env (found via module ancestry)
+    # re-inject DAYTONA_API_KEY and force sandbox execution.
+    monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "coding_agent.intent.IntentParser._find_dotenv_path",
+        lambda self: workspace / ".env",
+    )
     agent = CodingAgent(memory=FakeMemory(), root=workspace)
     return agent
 

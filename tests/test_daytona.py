@@ -72,6 +72,11 @@ def test_agent_uses_daytona_when_key_present(tmp_path: Path, monkeypatch) -> Non
 def test_agent_uses_local_without_key(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv("DAYTONA_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
+    # Prevent the repo .env (found via module ancestry) from re-injecting DAYTONA_API_KEY.
+    monkeypatch.setattr(
+        "coding_agent.intent.IntentParser._find_dotenv_path",
+        lambda self: tmp_path / ".env",
+    )
     agent = CodingAgent(memory=FakeMemory(), root=tmp_path)
     assert isinstance(agent.terminal, TerminalSandbox)
 

@@ -22,20 +22,22 @@ class MemoryStore:
         database = os.getenv("CHROMA_DATABASE", DEFAULT_DATABASE)
         api_key = os.getenv("CHROMA_API_KEY", "")
 
-        if not api_key:
-            raise RuntimeError(
-                "CHROMA_API_KEY is not set. Add it to .env "
-                "(copy from your Chroma Cloud dashboard)."
+        try:
+            if not api_key:
+                raise RuntimeError("CHROMA_API_KEY is not set")
+            self.client = chromadb.CloudClient(
+                tenant=tenant,
+                database=database,
+                api_key=api_key,
             )
-
-        self.client = chromadb.CloudClient(
-            tenant=tenant,
-            database=database,
-            api_key=api_key,
-        )
-        self.collection = self.client.get_or_create_collection(
-            name="agent_memory",
-        )
+            self.collection = self.client.get_or_create_collection(name="agent_memory")
+        except Exception as error:
+            logger.warning(
+                "Chroma Cloud memory unavailable; using temporary local memory: %s",
+                error,
+            )
+            self.client = chromadb.EphemeralClient()
+            self.collection = self.client.get_or_create_collection(name="agent_memory")
         self._last_ts = 0.0
 
     def _next_timestamp(self) -> float:

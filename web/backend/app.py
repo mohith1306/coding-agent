@@ -77,6 +77,18 @@ app.add_middleware(RequestLoggingMiddleware)
 WORKSPACES = ROOT / "web" / "workspaces"
 WORKSPACES.mkdir(parents=True, exist_ok=True)
 
+dotenv_path = ROOT / ".env"
+if dotenv_path.is_file():
+    for line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and (key not in os.environ or not os.environ.get(key, "").strip()):
+            os.environ[key] = value
+
 PROJECT_MARKERS = (
     ".git",
     ".hg",

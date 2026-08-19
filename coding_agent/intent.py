@@ -26,7 +26,7 @@ class IntentParser:
     """Parses coding-agent requests with an LLM."""
 
     def __init__(self) -> None:
-        dotenv_path = Path.cwd() / ".env"
+        dotenv_path = self._find_dotenv_path()
         self._load_dotenv(dotenv_path)
         self.provider = os.getenv("LLM_PROVIDER", "openai").lower().strip()
         self.model = os.getenv(
@@ -67,6 +67,22 @@ class IntentParser:
         self.max_tokens = int(os.getenv("CODING_AGENT_MAX_TOKENS", "2048"))
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)
+
+    def _find_dotenv_path(self) -> Path:
+        """Find .env in CWD ancestry first, then in package ancestry."""
+        cwd = Path.cwd().resolve()
+        for candidate_dir in (cwd, *cwd.parents):
+            candidate = candidate_dir / ".env"
+            if candidate.is_file():
+                return candidate
+
+        module_dir = Path(__file__).resolve().parent
+        for candidate_dir in (module_dir, *module_dir.parents):
+            candidate = candidate_dir / ".env"
+            if candidate.is_file():
+                return candidate
+
+        return cwd / ".env"
 
     def parse(self, user_message: str, history: Optional[list[dict[str, str]]] = None) -> Intent:
         if not self.api_key:
@@ -556,7 +572,8 @@ class IntentParser:
             key = key.strip()
             value = value.strip().strip('"').strip("'")
 
-            os.environ.setdefault(key, value)
+            if key not in os.environ or not os.environ.get(key, "").strip():
+                os.environ[key] = value
 
     def _log_configuration(self, dotenv_path: Path) -> None:
         logger.info("Intent parser provider: %s", self.provider)
