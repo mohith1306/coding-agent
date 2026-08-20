@@ -463,11 +463,15 @@ export default function App() {
   }
 
   async function bindProject(project) {
-    const id = activeIdRef.current;
+    const newId = crypto.randomUUID();
     setPickerOpen(false);
-    patchTab(id, {
+    const freshTab = makeTab(newId);
+    setTabs((prev) => [...prev, freshTab]);
+    setActiveTab(tabs.length - 1);
+    activeIdRef.current = newId;
+    patchTab(newId, {
       project,
-      title: project.name || id.slice(0, 8),
+      title: project.name || newId.slice(0, 8),
       tree: null,
       selected: "",
       fileContent: "",
@@ -476,18 +480,13 @@ export default function App() {
       openFolders: [],
     });
     try {
-      const res = await fetch(`/api/sessions/${id}`, {
+      await fetch(`/api/sessions/${newId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: project.path }),
       });
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.detail || "Failed to open project");
-      }
-      patchTab(id, {
+      patchTab(newId, {
         messages: [
-          ...(tab.messages || []),
           {
             role: "agent",
             text: `Opened project **${project.name}** at \`${project.path}\`. What would you like to work on?`,
@@ -495,12 +494,15 @@ export default function App() {
         ],
       });
     } catch (error) {
-      patchTab(id, {
+      setTabs((prev) => prev.filter((t) => t.id !== newId));
+      setActiveTab(safeIndex);
+      patchTab(activeIdRef.current, {
         messages: [
           ...(tab.messages || []),
           { role: "agent", text: `Error opening project: ${error.message}` },
         ],
       });
+      return;
     }
     refreshFiles();
   }
@@ -726,6 +728,7 @@ export default function App() {
     const fresh = makeTab();
     setTabs((prev) => [...prev, fresh]);
     setActiveTab(tabs.length);
+    activeIdRef.current = fresh.id;
     ensureSession(fresh.id);
     setPickerOpen(true);
   }
@@ -886,6 +889,13 @@ export default function App() {
           disabled={downloading}
         >
           {downloading ? "Zipping…" : "Download workspace"}
+        </button>
+        <button
+          onClick={newTab}
+          className="btn new-session"
+          title="New session"
+        >
+          +
         </button>
       </header>
 

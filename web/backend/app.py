@@ -572,6 +572,13 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
             agent = CodingAgent(memory=memory, root=workspace)
             _sessions[session_id] = (agent, memory)
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
+        else:
+            agent, _ = _sessions[session_id]
+            # If a root was explicitly provided and differs from the existing session's workspace,
+            # create a new session to avoid cross-folder querying.
+            if root is not None and agent.root != root:
+                new_session_id = str(uuid.uuid4())
+                return _get_agent(new_session_id, root=root)
         return _sessions[session_id][0], session_id
 
 
