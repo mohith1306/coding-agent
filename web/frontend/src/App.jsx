@@ -789,6 +789,7 @@ export default function App() {
           message: text,
           session_id: id,
           confirmed,
+          model: tab.model,
         }),
       });
       if (!res.ok) {
@@ -917,7 +918,7 @@ export default function App() {
       </div>
 
       <div className="workspace">
-        <aside className="files-panel">
+        <aside className="file-browser">
           <div className="files-header">Explorer</div>
           {!tab.tree && <div className="files-empty">No files yet.</div>}
           {tab.tree && tab.tree.length === 0 && (
@@ -1069,31 +1070,65 @@ export default function App() {
         </div>
 
         <form onSubmit={handleSubmit} className="input-row">
-          <div className="model-selector">
-            <select
-              value={tab.model}
-              onChange={(e) => patchTab(tab.id, { model: e.target.value })}
+          <div className="chat-composer">
+            <textarea
+              value={tab.input}
+              onChange={(e) => patchTab(tab.id, { input: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
+              placeholder={
+                tab.project
+                  ? "Ask anything, / for commands, @ for context..."
+                  : "Open a project first…"
+              }
               disabled={tab.busy || !tab.project}
-            >
-              <option value="openrouter/auto">openrouter/auto (default, free models rotate)</option>
-              <option value="openrouter/deepseek-coder-v2">openrouter/deepseek-coder-v2</option>
-              <option value="openrouter/codellama-34b">openrouter/codellama-34b</option>
-              <option value="openrouter/mistral-7b">openrouter/mistral-7b</option>
-              <option value="openai/gpt-4o">openai/gpt-4o</option>
-              <option value="gemini/gemini-1.5-flash">gemini/gemini-1.5-flash</option>
-              <option value="groq/llama-3.3-70b-versatile">groq/llama-3.3-70b-versatile</option>
-            </select>
+              rows={1}
+              autoFocus
+            />
+
+            <div className="composer-footer">
+              <button
+                type="button"
+                className="composer-icon"
+                title="Add context"
+                disabled={tab.busy || !tab.project}
+                onClick={() => {}}
+              >
+                +
+              </button>
+
+              <div className="model-selector">
+                <select
+                  value={tab.model}
+                  onChange={(e) => patchTab(tab.id, { model: e.target.value })}
+                  disabled={tab.busy || !tab.project}
+                  aria-label="Select model"
+                >
+                  <option value="openrouter/auto">Auto</option>
+                  <option value="openrouter/deepseek-coder-v2">DeepSeek Coder V2</option>
+                  <option value="openrouter/codellama-34b">CodeLlama 34B</option>
+                  <option value="openrouter/mistral-7b">Mistral 7B</option>
+                  <option value="openai/gpt-4o">GPT-4o</option>
+                  <option value="gemini/gemini-1.5-flash">Gemini 1.5 Flash</option>
+                  <option value="groq/llama-3.3-70b-versatile">Llama 3.3 70B</option>
+                </select>
+              </div>
+
+              <button
+                type="submit"
+                className="composer-send"
+                disabled={tab.busy || !tab.input.trim() || !tab.project}
+                title="Send message"
+                aria-label="Send message"
+              >
+                ↑
+              </button>
+            </div>
           </div>
-          <input
-            value={tab.input}
-            onChange={(e) => patchTab(tab.id, { input: e.target.value })}
-            placeholder={tab.project ? `Type your request… (model: ${tab.model})` : "Open a project first…"}
-            disabled={tab.busy || !tab.project}
-            autoFocus
-          />
-          <button type="submit" disabled={tab.busy || !tab.input.trim() || !tab.project}>
-            Send
-          </button>
         </form>
         </main>
       </div>
