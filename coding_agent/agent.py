@@ -228,6 +228,10 @@ class CodingAgent:
             return self._handle_list_issues(intent)
         if intent.name == "list_prs":
             return self._handle_list_prs(intent)
+        if intent.name == "analyze_project":
+            return self._handle_analyze_project(intent, context)
+        if intent.name == "run_tests":
+            return self._handle_run_tests(intent, context)
         if intent.name == "explain":
             return self._handle_question(intent, context)
         if intent.name == "unknown" and intent.reason:
@@ -244,8 +248,24 @@ class CodingAgent:
             emit({"type": "phase", "message": f"Running `{file_command}`…"})
             return self.terminal.run(file_command)
 
+        if self._is_local_git_clone(command):
+            emit({"type": "phase", "message": "Cloning into the local workspace…"})
+            return TerminalSandbox(self.root).run(command)
+
         emit({"type": "phase", "message": f"Running `{command}`…"})
         return self.terminal.run(command)
+
+    def _is_local_git_clone(self, command: str) -> bool:
+        tokens = command.strip().split()
+        if len(tokens) < 2 or tokens[0] != "git" or tokens[1] != "clone":
+            return False
+        # git clone must happen in the local workspace so the file browser can see it;
+        # a remote sandbox would swallow the new files in its own filesystem.
+        return any(
+            token.startswith(("http://", "https://", "git@", "ssh://"))
+            or token.endswith(".git")
+            for token in tokens[2:]
+        )
 
     def _resolve_run_file(self, command: str) -> Optional[str]:
         candidate = Path(command)
@@ -484,6 +504,79 @@ class CodingAgent:
                 line += f" ({files})"
             lines.append(line)
         return "\n".join(lines)
+
+    def _handle_analyze_project(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
+        summary_parts = []
+
+        # 1. Project overview from context builder
+        overview = self.context_builder.build("")
+        if overview:
+            summary_parts.append(f"## Project Overview\n{overview}")
+
+        # 2. Detect key files (entry points, tests, configs)
+        key_files = []
+        for entry in self.root.rglob("*"):
+            if entry.is_file():
+                suffix = entry.suffix
+                name = entry.name.lower()
+                # Entry points
+                if suffix in {".py"} and any(kw in name for kw in {"__init__", "app", "main", "server"}):
+                    key_files.append((entry, "entry point"))
+                # Test files
+                elif any(keyword in name for keyword in {"test", "spec"}):
+                    key_files.append((entry, "test file"))
+                # Config files
+                elif suffix in {".json", ".yml", ".yaml", ".toml", ".cfg", ".ini"}:
+                    key_files.append((entry, "config file"))
+                # Markdown docs
+                elif suffix == ".md":
+                    key_files.append((entry, "documentation"))
+
+        if key_files:
+            summary_parts.append("## Key Files Detected")
+            for path, kind in key_files[:10]:  # show first 10
+                rel = str(path.relative_to(self.root))
+                summary_parts.append(f"- **{rel}** ({kind})")
+
+        # 3. Detected intent patterns from recent turns
+        recent = self.memory.recent_turns(limit=3)
+        if recent:
+            summary_parts.append("## Recent Activity")
+            for turn in recent:
+                role = turn.get("role", "user")
+                msg = turn.get("message", "")[:80]
+                summary_parts.append(f"- **{role}**: {msg}")
+
+        if not summary_parts:
+            return "I couldn't detect any project structure or recent activity. Ensure the project has recognizable files (Python files, tests, configs, or markdown docs)."
+
+        return "\n".join(summary_parts)
+
+    def _handle_run_tests(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
+        # Find test files in the project
+        test_files = sorted(self.root.rglob("*test*.py")) + sorted(self.root.rglob("*_test.py"))
+        if not test_files:
+            return "No test files found in the project root. Add test files matching `*test*.py` or `*_test.py`."
+
+        results = []
+        all_passed = True
+        for test_file in test_files[:10]:  # limit to first 10 test files
+            result = self._test_python_file(test_file)
+            results.append(f"**{test_file.name}**: {result}")
+            if "PASS" not in result:
+                all_passed = False
+
+        summary = f"## Test Execution Results\n"
+        summary += f"- **Files run**: {len(test_files)}\n"
+        summary += f"- **All passed**: {all_passed}\n"
+        summary += "\n".join(results)
+
+        if all_passed:
+            summary += "\n✅ All tests passed!"
+        else:
+            summary += "\n❌ Some tests failed."
+
+        return summary
 
     def _handle_commit(self, intent: Intent, push: bool = False) -> str:
         status = self.git.status()

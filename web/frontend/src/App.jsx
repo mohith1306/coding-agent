@@ -21,6 +21,7 @@ function makeTab(id = crypto.randomUUID(), title = "New session") {
     running: false,
     runResult: "",
     openFolders: [],
+    model: "openrouter/auto",
   };
 }
 
@@ -30,7 +31,7 @@ function loadTabs() {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed.map((t) => ({ ...makeTab(t.id), ...t }));
+        return parsed.map((t) => ({ ...makeTab(t.id), ...t, model: t.model || "openrouter/auto" }));
       }
     } catch {
       // fall through to a fresh tab
@@ -1068,10 +1069,25 @@ export default function App() {
         </div>
 
         <form onSubmit={handleSubmit} className="input-row">
+          <div className="model-selector">
+            <select
+              value={tab.model}
+              onChange={(e) => patchTab(tab.id, { model: e.target.value })}
+              disabled={tab.busy || !tab.project}
+            >
+              <option value="openrouter/auto">openrouter/auto (default, free models rotate)</option>
+              <option value="openrouter/deepseek-coder-v2">openrouter/deepseek-coder-v2</option>
+              <option value="openrouter/codellama-34b">openrouter/codellama-34b</option>
+              <option value="openrouter/mistral-7b">openrouter/mistral-7b</option>
+              <option value="openai/gpt-4o">openai/gpt-4o</option>
+              <option value="gemini/gemini-1.5-flash">gemini/gemini-1.5-flash</option>
+              <option value="groq/llama-3.3-70b-versatile">groq/llama-3.3-70b-versatile</option>
+            </select>
+          </div>
           <input
             value={tab.input}
             onChange={(e) => patchTab(tab.id, { input: e.target.value })}
-            placeholder={tab.project ? "Type your request…" : "Open a project first…"}
+            placeholder={tab.project ? `Type your request… (model: ${tab.model})` : "Open a project first…"}
             disabled={tab.busy || !tab.project}
             autoFocus
           />

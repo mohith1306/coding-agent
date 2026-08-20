@@ -148,3 +148,45 @@ def test_blocked_command_returns_reason(tmp_path: Path, monkeypatch) -> None:
     agent = CodingAgent(memory=FakeMemory(), root=tmp_path)
     result = agent.terminal.run("rm -rf /")
     assert "Blocked" in result
+
+
+def test_git_clone_runs_locally_even_with_daytona(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "coding_agent.intent.IntentParser._find_dotenv_path",
+        lambda self: tmp_path / ".env",
+    )
+    fake = MagicMock()
+    fake.return_value.run.side_effect = AssertionError("git clone must NOT reach the sandbox")
+    monkeypatch.setattr("coding_agent.agent.DaytonaSandbox", fake)
+
+    from coding_agent.agent import CodingAgent
+
+    agent = CodingAgent(memory=FakeMemory(), root=tmp_path)
+    assert agent.terminal is fake.return_value
+
+    captured = {}
+
+    def local_run(self, command, timeout=30):
+        captured["command"] = command
+        return "Exit code: 0\nCloning into 'sig_repo'...\n"
+
+    monkeypatch.setattr("coding_agent.agent.TerminalSandbox.run", local_run)
+
+    result = agent._is_local_git_clone("git clone https://github.com/u/repo.git")
+    assert result is True
+    assert agent._is_local_git_clone("git status") is False
+    assert agent._is_local_git_clone("git clone ../local/path") is False
+
+    out = agent._handle_run_command(
+        _intent_for_clone("git clone https://github.com/mohith1306/signature_verification")
+    )
+    assert "Cloning into 'sig_repo'" in out
+    assert captured["command"].startswith("git clone")
+
+
+def _intent_for_clone(command: str):
+    from coding_agent.intent import Intent
+
+    return Intent(name="run_command", target=command, raw_message=command)
