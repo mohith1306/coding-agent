@@ -374,12 +374,20 @@ body {
   overflow: hidden;
 }
 
+.code-pane {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  overflow: hidden;
+  border-right: 1px solid #26292f;
+}
+
 .file-browser {
   border-right: 1px solid #26292f;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #12141a
+  background: #12141a;
 }
 
 .editor-panel {

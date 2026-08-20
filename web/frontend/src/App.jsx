@@ -889,128 +889,47 @@ export default function App() {
         </button>
       </header>
 
-      <div className="tab-bar">
-        <div className="tabs">
-          {tabs.map((t, i) => (
-            <div
-              key={t.id}
-              className={`tab ${i === safeIndex ? "active" : ""}`}
-              onClick={() => setActiveTab(i)}
-              title={t.id}
-            >
-              <span className="tab-title">{t.title}</span>
-              <span
-                className="tab-close"
-                title="Close tab"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(i);
-                }}
-              >
-                ×
-              </span>
-            </div>
-          ))}
-        </div>
-        <button className="tab-add" onClick={newTab} title="New tab">
-          +
-        </button>
-      </div>
-
       <div className="workspace">
-        <aside className="file-browser">
-          <div className="files-header">Explorer</div>
-          {!tab.tree && <div className="files-empty">No files yet.</div>}
-          {tab.tree && tab.tree.length === 0 && (
-            <div className="files-empty">Empty workspace.</div>
-          )}
-          {tab.tree && tab.tree.length > 0 && (
-            <div className="files-tree">
-              {tab.tree.map((node, i) => (
-                <FileTree
-                  key={`${node.name}-${i}`}
-                  node={{ ...node, path: node.name }}
-                  onSelect={loadFile}
-                  selected={tab.selected}
-                  open={new Set(tab.openFolders || [])}
-                  onToggle={toggleFolder}
-                  onDelete={deleteFile}
-                />
-              ))}
-            </div>
-          )}
-        </aside>
-
-        <main className="editor-panel">
-          {!tab.selected && (
-            <div className="editor-empty">
-              Select a file from the explorer to view or edit it.
-            </div>
-          )}
-          {tab.selected && (
-            <div className="file-preview">
-              <div className="editor-toolbar">
-                <span className="file-preview-name">{tab.selected}</span>
-                <div className="editor-actions">
-                  {tab.selected.endsWith(".py") &&
-                    (tab.running ? (
-                      <button
-                        onClick={stopRun}
-                        className="btn stop"
-                        title="Stop the running process"
-                      >
-                        Stop
-                      </button>
-                    ) : (
-                      <button
-                        onClick={runFile}
-                        className="btn run"
-                        disabled={tab.dirty}
-                        title={
-                          tab.dirty
-                            ? "Save changes before running"
-                            : "Run in sandbox (Python only)"
-                        }
-                      >
-                        Run
-                      </button>
-                    ))}
-                  <button
-                    onClick={saveFile}
-                    className="btn save"
-                    disabled={tab.saving || !tab.dirty}
-                  >
-                    {tab.saving ? "Saving…" : "Save"}
-                  </button>
-                  <button
-                    onClick={() => deleteFile(tab.selected)}
-                    className="btn del"
-                  >
-                    Delete
-                  </button>
-                </div>
+        <section className="code-pane">
+          <aside className="file-browser">
+            {tab.tree && tab.tree.length > 0 && (
+              <div className="files-tree">
+                {tab.tree.map((node, i) => (
+                  <FileTree
+                    key={`${node.name}-${i}`}
+                    node={{ ...node, path: node.name }}
+                    onSelect={loadFile}
+                    selected={tab.selected}
+                    open={new Set(tab.openFolders || [])}
+                    onToggle={toggleFolder}
+                    onDelete={deleteFile}
+                  />
+                ))}
               </div>
-              <textarea
-                className="code-editor"
-                value={tab.fileContent}
-                onChange={(e) => {
-                  patchTab(tab.id, { fileContent: e.target.value, dirty: true });
-                }}
-                spellCheck={false}
-                autoCapitalize="off"
-                autoCorrect="off"
-              />
-              {(tab.runResult || tab.running) && (
-                <div className="run-output">
-                  <div className="run-output-title">
-                    {tab.running ? "Running…" : "Output"}
-                  </div>
-                  <pre ref={runOutputRef}>{tab.runResult || ""}</pre>
+            )}
+          </aside>
+
+          <main className="editor-panel">
+            {!tab.selected && (
+              <div className="editor-empty">Select a file to preview it.</div>
+            )}
+            {tab.selected && (
+              <div className="file-preview">
+                <div className="editor-toolbar">
+                  <span className="file-preview-name">{tab.selected}</span>
                 </div>
-              )}
-            </div>
-          )}
-        </main>
+                <textarea
+                  className="code-editor"
+                  value={tab.fileContent}
+                  readOnly
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                />
+              </div>
+            )}
+          </main>
+        </section>
 
         <main className="chat">
           <div className="messages">
