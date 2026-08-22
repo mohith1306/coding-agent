@@ -13,6 +13,7 @@ Rules:
 - Inline file content goes in args.content
 - requires_confirmation = true for delete, install, commit, push
 - unknown + low confidence + explain in reason if ambiguous
+- "tell me about" / "describe" / "what is" / "explain" + folder/project = explain (NOT search_files)
 - "write" + file type = create_file (e.g. "write dfs in python" = create_file with target "dfs.py")
 - "do the same" / "also" / "another" + topic = create_file (user wants a similar new file)
 - "bfs" or "dfs" are algorithms, NOT file extensions or glob patterns
@@ -86,5 +87,11 @@ JSON: {"intent":"push","target":"","args":{},"confidence":0.9,"requires_confirma
 
 User: commit and push the changes
 JSON: {"intent":"commit_and_push","target":"","args":{},"confidence":0.9,"requires_confirmation":true,"reason":"User wants to commit and push changes."}
+
+User: tell me about this frontend folder
+JSON: {"intent":"explain","target":"frontend","args":{},"confidence":0.9,"requires_confirmation":false,"reason":"User wants to understand the frontend folder."}
+
+User: describe the project structure
+JSON: {"intent":"explain","target":"","args":{},"confidence":0.9,"requires_confirmation":false,"reason":"User wants an overview of the project."}
 
 Now respond with JSON only for the next user message.

@@ -5,6 +5,7 @@ import subprocess
 from typing import Optional
 
 from .memory import MemoryStore
+from .project_context import ProjectContext
 
 
 logger = logging.getLogger(__name__)
@@ -39,12 +40,29 @@ class AgentContext:
     has_typecheck_config: bool
 
     session_summary: str = ""
+    project_context: str = ""
 
 
 class ContextBuilder:
     def __init__(self, memory: MemoryStore, root: Optional[Path] = None) -> None:
         self.memory = memory
         self.root = (root or Path.cwd()).resolve()
+        self.project_context = ProjectContext(self.root, memory)
+        self._reset_caches()
+
+    def _reset_caches(self) -> None:
+        """Reset global caches when workspace changes to avoid stale context."""
+        global PROJECT_IDENTITY_CACHE, TRACKED_FILES_CACHE
+        PROJECT_IDENTITY_CACHE = None
+        TRACKED_FILES_CACHE = None
+
+    def get_or_create_project_context(self) -> str:
+        """Get existing project context or create initial context for new project."""
+        if not self.project_context.exists():
+            initial_context = self.project_context.generate_initial_context(self)
+            self.project_context.save(initial_context)
+            return ""
+        return self.project_context.get_context_for_prompt()
 
     def build(self, user_message: str) -> AgentContext:
         chat_history = self.memory.recent_turns(5)
@@ -64,6 +82,9 @@ class ContextBuilder:
         branch, dirty_files = self._git_status()
         identity = self._detect_project_identity()
 
+        # Load or create project context
+        project_context = self.get_or_create_project_context()
+
         return AgentContext(
             chat_history=chat_history,
             similar_context=similar_context,
@@ -77,6 +98,7 @@ class ContextBuilder:
             has_test_config=identity.has_test_config,
             has_lint_config=identity.has_lint_config,
             has_typecheck_config=identity.has_typecheck_config,
+            project_context=project_context,
         )
 
     def format_for_prompt(self, ctx: AgentContext) -> str:
@@ -97,6 +119,9 @@ class ContextBuilder:
             parts.append(f"Dirty: {files_str}")
             if len(ctx.dirty_files) > 5:
                 parts[-1] += f" (+{len(ctx.dirty_files)-5} more)"
+
+        if ctx.project_context:
+            parts.append(f"\n--- Project Context ---\n{ctx.project_context[:4000]}")
 
         if ctx.session_summary:
             parts.append(f"\n--- Session Summary ---\n{ctx.session_summary[:4000]}")

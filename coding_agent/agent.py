@@ -101,6 +101,15 @@ class CodingAgent:
             target=intent.target,
         )
 
+        # Update persistent project context with new learnings
+        if tool_response and len(tool_response) > 50:
+            self.context_builder.project_context.update_after_turn(
+                user_message=user_message,
+                agent_response=tool_response,
+                intent=intent.name,
+                target=intent.target,
+            )
+
         self._maybe_compact()
 
         if tool_response is not None:
