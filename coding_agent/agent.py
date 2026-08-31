@@ -31,10 +31,13 @@ CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"
 logger = logging.getLogger(__name__)
 
 
+_MISSING = object()
+
+
 class CodingAgent:
-    def __init__(self, memory: Optional[MemoryStore] = None, root: Optional[Path] = None) -> None:
+    def __init__(self, memory: Optional[MemoryStore] = _MISSING, root: Optional[Path] = None) -> None:
         self.root = (root or Path.cwd()).resolve()
-        self.memory = memory or MemoryStore()
+        self.memory = MemoryStore() if memory is _MISSING else memory
         self.context_builder = ContextBuilder(self.memory, root=self.root)
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser()

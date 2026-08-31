@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.events import reset_event_sink, set_event_sink
-from coding_agent.memory import MemoryStore
+from coding_agent.memory import MemoryStore, InMemoryMemoryStore
 
 # LangGraph runtime (optional)
 _agent_graph_cls = None
@@ -680,7 +680,8 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
             try:
                 memory = MemoryStore()
             except RuntimeError:
-                memory = None
+                memory = InMemoryMemoryStore()
+                logger.warning("PostgreSQL unavailable, using in-memory fallback")
             agent = CodingAgent(memory=memory, root=workspace)
             _sessions[session_id] = (agent, memory)
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
@@ -708,7 +709,11 @@ def _get_or_create_graph(session_id: str, root: Path, model: str = "") -> tuple:
                 return graph, memory, session_id
 
     # Build new graph outside lock
-    memory = MemoryStore()
+    try:
+        memory = MemoryStore()
+    except RuntimeError:
+        memory = InMemoryMemoryStore()
+        logger.warning("PostgreSQL unavailable, using in-memory fallback for graph")
     intent_parser = IntentParser()
     context_builder = ContextBuilder(memory, root=root)
     planner = Planner()
