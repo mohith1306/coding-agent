@@ -1,233 +1,352 @@
+"""Memory store backed by PostgreSQL.
+
+Provides the same public API as the previous ChromaDB implementation.
+Vector search (retrieve_similar) is stubbed out for now - will be added
+later when pgvector embeddings are implemented.
+"""
+
+import json
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
-import chromadb
+import psycopg2
+from psycopg2.extras import RealDictCursor, Json
+
+from .db import get_connection, init_db
 
 
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_TENANT = "fc88920c-2c38-4228-abe3-ee448a2d7fa6"
-DEFAULT_DATABASE = "Coding_Agent"
-
-
 class MemoryStore:
-    def __init__(self, storage_dir: Optional[Path] = None) -> None:
-        self._load_dotenv(Path.cwd() / ".env")
-        tenant = os.getenv("CHROMA_TENANT", DEFAULT_TENANT)
-        database = os.getenv("CHROMA_DATABASE", DEFAULT_DATABASE)
-        api_key = os.getenv("CHROMA_API_KEY", "")
+    """PostgreSQL-backed memory store for agent context."""
 
+    def __init__(self, storage_dir: Optional[Path] = None) -> None:
+        """Initialize the memory store.
+
+        Args:
+            storage_dir: Unused, kept for API compatibility.
+        """
         try:
-            if not api_key:
-                raise RuntimeError("CHROMA_API_KEY is not set")
-            self.client = chromadb.CloudClient(
-                tenant=tenant,
-                database=database,
-                api_key=api_key,
-            )
-            self.collection = self.client.get_or_create_collection(name="agent_memory")
+            init_db()
         except Exception as error:
-            logger.warning(
-                "Chroma Cloud memory unavailable; using temporary local memory: %s",
-                error,
-            )
-            self.client = chromadb.EphemeralClient()
-            self.collection = self.client.get_or_create_collection(name="agent_memory")
+            logger.warning("Database initialization failed: %s", error)
+            raise
+
         self._last_ts = 0.0
 
     def _next_timestamp(self) -> float:
+        """Generate a monotonically increasing timestamp."""
         now = time.time()
         if now <= self._last_ts:
             now = self._last_ts + 1e-6
         self._last_ts = now
         return now
 
-    def _load_dotenv(self, path: Path) -> None:
-        if not path.is_file():
-            return
-        for line in path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, value = stripped.split("=", 1)
-            key = key.strip()
-            value = value.strip().strip('"').strip("'")
-            os.environ.setdefault(key, value)
-
     # -- chat turns --
 
-    def add_turn(self, user_message: str, agent_response: str, intent: str = "", target: str = "") -> None:
-        content = f"User: {user_message}\nAgent: {agent_response}"
+    def add_turn(
+        self,
+        user_message: str,
+        agent_response: str,
+        intent: str = "",
+        target: str = "",
+    ) -> None:
+        """Store a conversation turn."""
         doc_id = str(uuid.uuid4())
-        self.collection.add(
-            documents=[content],
-            metadatas=[{
-                "doc_type": "chat",
-                "role": "user",
-                "content": user_message[:1000],
-                "agent_response": agent_response[:2000],
-                "intent": intent,
-                "target": target,
-                "timestamp": self._next_timestamp(),
-            }],
-            ids=[doc_id],
-        )
+        metadata = {
+            "doc_type": "chat",
+            "role": "user",
+            "content": user_message[:1000],
+            "agent_response": agent_response[:2000],
+            "intent": intent,
+            "target": target,
+            "timestamp": self._next_timestamp(),
+        }
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memory (id, doc_type, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (
+                        doc_id,
+                        "chat",
+                        f"User: {user_message}\nAgent: {agent_response}",
+                        Json(metadata),
+                    ),
+                )
+            conn.commit()
+        except Exception as error:
+            conn.rollback()
+            logger.warning("Failed to add turn: %s", error)
+        finally:
+            conn.close()
 
     def recent_turns(self, limit: int = 5) -> list[dict[str, str]]:
-        results = self.collection.get(
-            where={"doc_type": "chat"},
-            include=["metadatas"],
-        )
-        if not results["ids"]:
+        """Get recent chat turns ordered by timestamp."""
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT metadata
+                    FROM agent_memory
+                    WHERE doc_type = %s
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                    """,
+                    ("chat",),
+                )
+                rows = cur.fetchall()
+
+            if not rows:
+                return []
+
+            entries = []
+            for row in rows:
+                meta = row["metadata"]
+                entries.append({
+                    "user": meta.get("content", ""),
+                    "agent": meta.get("agent_response", ""),
+                    "intent": meta.get("intent", ""),
+                    "target": meta.get("target", ""),
+                    "_ts": meta.get("timestamp", 0),
+                })
+
+            entries.sort(key=lambda e: e["_ts"], reverse=True)
+            for e in entries:
+                del e["_ts"]
+            return entries[:limit]
+        except Exception as error:
+            logger.warning("Failed to get recent turns: %s", error)
             return []
-
-        entries = []
-        for i in range(len(results["ids"])):
-            meta = results["metadatas"][i]
-            entries.append({
-                "user": meta.get("content", ""),
-                "agent": meta.get("agent_response", ""),
-                "intent": meta.get("intent", ""),
-                "target": meta.get("target", ""),
-                "_ts": meta.get("timestamp", 0),
-            })
-
-        entries.sort(key=lambda e: e["_ts"], reverse=True)
-        for e in entries:
-            del e["_ts"]
-        return entries[:limit]
+        finally:
+            conn.close()
 
     # -- file events --
 
-    def add_file_event(self, path: str, operation: str, content: str = "") -> None:
-        text = f"[{operation}] {path}: {content[:500]}"
+    def add_file_event(
+        self, path: str, operation: str, content: str = ""
+    ) -> None:
+        """Store a file event (create, modify, delete)."""
         doc_id = str(uuid.uuid4())
-        self.collection.add(
-            documents=[text[:2000]],
-            metadatas=[{
-                "doc_type": "file",
-                "path": path,
-                "operation": operation,
-                "content_preview": content[:500],
-                "timestamp": self._next_timestamp(),
-            }],
-            ids=[doc_id],
-        )
+        text = f"[{operation}] {path}: {content[:500]}"
+        metadata = {
+            "doc_type": "file",
+            "path": path,
+            "operation": operation,
+            "content_preview": content[:500],
+            "timestamp": self._next_timestamp(),
+        }
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memory (id, doc_type, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (doc_id, "file", text[:2000], Json(metadata)),
+                )
+            conn.commit()
+        except Exception as error:
+            conn.rollback()
+            logger.warning("Failed to add file event: %s", error)
+        finally:
+            conn.close()
 
     # -- tasks --
 
-    def add_task(self, description: str, status: str = "pending", files_affected: Optional[list[str]] = None) -> None:
-        text = f"[Task: {description}] ({status})"
+    def add_task(
+        self,
+        description: str,
+        status: str = "pending",
+        files_affected: Optional[list[str]] = None,
+    ) -> None:
+        """Store a task event."""
         doc_id = str(uuid.uuid4())
-        self.collection.add(
-            documents=[text],
-            metadatas=[{
-                "doc_type": "task",
-                "description": description[:500],
-                "status": status,
-                "files_affected": ",".join(files_affected or []),
-                "timestamp": self._next_timestamp(),
-            }],
-            ids=[doc_id],
-        )
+        text = f"[Task: {description}] ({status})"
+        metadata = {
+            "doc_type": "task",
+            "description": description[:500],
+            "status": status,
+            "files_affected": ",".join(files_affected or []),
+            "timestamp": self._next_timestamp(),
+        }
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memory (id, doc_type, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (doc_id, "task", text, Json(metadata)),
+                )
+            conn.commit()
+        except Exception as error:
+            conn.rollback()
+            logger.warning("Failed to add task: %s", error)
+        finally:
+            conn.close()
 
     # -- preferences / key-value --
 
     def set_preference(self, key: str, value: str) -> None:
+        """Set a preference (upsert)."""
         doc_id = f"pref_{key}"
-        self.collection.upsert(
-            documents=[value],
-            metadatas=[{
-                "doc_type": "preference",
-                "key": key,
-                "value": value[:1000],
-                "timestamp": self._next_timestamp(),
-            }],
-            ids=[doc_id],
-        )
+        metadata = {
+            "doc_type": "preference",
+            "key": key,
+            "value": value[:1000],
+            "timestamp": self._next_timestamp(),
+        }
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO agent_memory (id, doc_type, content, metadata)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        content = EXCLUDED.content,
+                        metadata = EXCLUDED.metadata,
+                        created_at = NOW()
+                    """,
+                    (doc_id, "preference", value, Json(metadata)),
+                )
+            conn.commit()
+        except Exception as error:
+            conn.rollback()
+            logger.warning("Failed to set preference: %s", error)
+        finally:
+            conn.close()
 
     def get_preference(self, key: str) -> Optional[str]:
-        results = self.collection.get(
-            ids=[f"pref_{key}"],
-            include=["metadatas"],
-        )
-        if results["ids"] and results["metadatas"]:
-            return results["metadatas"][0].get("value")
-        return None
+        """Get a preference value by key."""
+        doc_id = f"pref_{key}"
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT metadata
+                    FROM agent_memory
+                    WHERE id = %s
+                    """,
+                    (doc_id,),
+                )
+                row = cur.fetchone()
+
+            if row and row["metadata"]:
+                return row["metadata"].get("value")
+            return None
+        except Exception as error:
+            logger.warning("Failed to get preference: %s", error)
+            return None
+        finally:
+            conn.close()
 
     def list_preferences(self, limit: int = 50) -> list[dict[str, str]]:
-        results = self.collection.get(
-            where={"doc_type": "preference"},
-            include=["metadatas"],
-        )
-        merged = []
-        if results["ids"]:
-            for i in range(len(results["ids"])):
-                meta = results["metadatas"][i]
+        """List all preferences."""
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT metadata
+                    FROM agent_memory
+                    WHERE doc_type = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    ("preference", limit),
+                )
+                rows = cur.fetchall()
+
+            merged = []
+            for row in rows:
+                meta = row["metadata"]
                 merged.append({
                     "key": meta.get("key", ""),
                     "value": meta.get("value", ""),
                 })
-        merged.sort(key=lambda p: p["key"])
-        return merged[:limit]
+            merged.sort(key=lambda p: p["key"])
+            return merged
+        except Exception as error:
+            logger.warning("Failed to list preferences: %s", error)
+            return []
+        finally:
+            conn.close()
 
-    # -- vector retrieval --
+    # -- vector retrieval (stubbed for now) --
 
-    def retrieve_similar(self, query: str, k: int = 5, doc_type: Optional[str] = None, max_distance: float = 0.95) -> list[dict]:
-        logger.info("Vector search: query=%s k=%s doc_type=%s", query[:80], k, doc_type)
-        where = {"doc_type": doc_type} if doc_type else None
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=k,
-            where=where,
-            include=["metadatas", "documents", "distances"],
+    def retrieve_similar(
+        self,
+        query: str,
+        k: int = 5,
+        doc_type: Optional[str] = None,
+        max_distance: float = 0.95,
+    ) -> list[dict]:
+        """Retrieve similar documents using vector search.
+
+        Currently returns empty - will be implemented with pgvector embeddings.
+        """
+        logger.info(
+            "Vector search (stubbed): query=%s k=%s doc_type=%s",
+            query[:80],
+            k,
+            doc_type,
         )
-
-        merged = []
-        if results["ids"][0]:
-            for i in range(len(results["ids"][0])):
-                dist = results["distances"][0][i]
-                logger.debug("  candidate dist=%.3f doc_type=%s text=%s",
-                             dist,
-                             results["metadatas"][0][i].get("doc_type"),
-                             results["documents"][0][i][:60])
-                if dist > max_distance:
-                    continue
-                merged.append({
-                    "id": results["ids"][0][i],
-                    "document": results["documents"][0][i],
-                    "metadata": results["metadatas"][0][i],
-                    "distance": dist,
-                })
-        logger.info("Vector search returned %d/%d results", len(merged), len(results["ids"][0]))
-        return merged
+        return []
 
     # -- raw filter (no vector) --
 
-    def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
-        results = self.collection.get(
-            where={"doc_type": doc_type},
-            include=["metadatas", "documents"],
-            limit=limit,
-            offset=offset,
-        )
-        merged = []
-        if results["ids"]:
-            for i in range(len(results["ids"])):
+    def get_by_type(
+        self, doc_type: str, limit: int = 20, offset: int = 0
+    ) -> list[dict]:
+        """Get documents by type with pagination."""
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT id, content, metadata
+                    FROM agent_memory
+                    WHERE doc_type = %s
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                    """,
+                    (doc_type, limit, offset),
+                )
+                rows = cur.fetchall()
+
+            merged = []
+            for row in rows:
                 merged.append({
-                    "id": results["ids"][i],
-                    "document": results["documents"][i],
-                    "metadata": results["metadatas"][i],
+                    "id": str(row["id"]),
+                    "document": row["content"],
+                    "metadata": row["metadata"],
                 })
-        return merged
+            return merged
+        except Exception as error:
+            logger.warning("Failed to get by type: %s", error)
+            return []
+        finally:
+            conn.close()
 
     def get_all_by_type(self, doc_type: str) -> list[dict]:
-        """Fetch every document of a type, paging to stay under Chroma's Get quota."""
+        """Fetch every document of a type."""
         results: list[dict] = []
         offset = 0
         page_size = 300
@@ -242,6 +361,23 @@ class MemoryStore:
         return results
 
     def delete_by_ids(self, ids: list[str]) -> None:
+        """Delete documents by ID."""
         if not ids:
             return
-        self.collection.delete(ids=ids)
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM agent_memory
+                    WHERE id = ANY(%s)
+                    """,
+                    (ids,),
+                )
+            conn.commit()
+        except Exception as error:
+            conn.rollback()
+            logger.warning("Failed to delete by ids: %s", error)
+        finally:
+            conn.close()

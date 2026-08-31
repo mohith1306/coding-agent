@@ -1,6 +1,6 @@
 fastapi>=0.110
 uvicorn>=0.27
-chromadb>=1.5.0
+psycopg2-binary>=2.9.0
 daytona>=0.198.0
 eval_type_backport>=0.2.0
 

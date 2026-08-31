@@ -27,6 +27,35 @@ def parse_sse(text: str) -> list[dict]:
 @pytest.fixture
 def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(appmod, "WORKSPACES", tmp_path / "workspaces")
+
+    # Mock MemoryStore to avoid database dependency in tests
+    class MockMemoryStore:
+        def __init__(self, *args, **kwargs):
+            pass
+        def add_turn(self, *a, **kw):
+            pass
+        def recent_turns(self, *a, **kw):
+            return []
+        def add_file_event(self, *a, **kw):
+            pass
+        def add_task(self, *a, **kw):
+            pass
+        def set_preference(self, *a, **kw):
+            pass
+        def get_preference(self, *a, **kw):
+            return None
+        def list_preferences(self, *a, **kw):
+            return []
+        def retrieve_similar(self, *a, **kw):
+            return []
+        def get_by_type(self, *a, **kw):
+            return []
+        def get_all_by_type(self, *a, **kw):
+            return []
+        def delete_by_ids(self, *a, **kw):
+            pass
+
+    monkeypatch.setattr(appmod, "MemoryStore", MockMemoryStore)
     return TestClient(appmod.app)
 
 

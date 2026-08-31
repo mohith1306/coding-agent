@@ -1,5 +1,5 @@
-# ChromaDB vector store (used for context retrieval / memory).
-chromadb>=1.5.0
+# PostgreSQL database adapter
+psycopg2-binary>=2.9.0
 
 # Daytona sandbox (remote execution of code). Optional: set DAYTONA_API_KEY to enable.
 daytona>=0.198.0
