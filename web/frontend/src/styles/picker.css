@@ -1,0 +1,193 @@
+/* ── Project Picker Modal ──────────────────────────────────── */
+.picker-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+}
+.picker {
+  width: min(600px, 94vw);
+  max-height: 82vh;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 12px;
+}
+.picker-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.picker-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 18px;
+}
+.picker-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.picker-hint {
+  padding: 0 24px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── Picker Tabs ──────────────────────────────────────────── */
+.picker-tabs {
+  display: flex;
+  gap: 0;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.picker-tab {
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+  transition: all 0.15s;
+}
+.picker-tab:hover { color: var(--text-secondary); }
+.picker-tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--primary);
+}
+
+.picker-error {
+  margin: 12px 24px;
+  padding: 8px 12px;
+  background: var(--error-bg);
+  color: var(--error);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+
+/* ── Picker Browse ────────────────────────────────────────── */
+.picker-browse { padding: 16px 24px; }
+.picker-up {
+  display: inline-block;
+  margin: 8px 0;
+  padding: 4px 10px;
+  font-size: 13px;
+  color: var(--primary);
+  border-radius: var(--radius-sm);
+}
+.picker-up:hover { background: var(--primary-bg); }
+.picker-browse-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* ── Picker Custom Input ──────────────────────────────────── */
+.picker-custom {
+  display: flex;
+  gap: 8px;
+  padding: 16px 24px;
+}
+.picker-custom input {
+  flex: 1;
+  padding: 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+.picker-custom input:focus { border-color: var(--primary); }
+.picker-custom input::placeholder { color: var(--text-placeholder); }
+.picker-custom button {
+  padding: 8px 16px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+}
+.picker-custom button:hover { filter: brightness(1.1); }
+.picker-custom button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Picker Divider ───────────────────────────────────────── */
+.picker-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 24px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.picker-divider::before,
+.picker-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-subtle);
+}
+
+/* ── Picker List ──────────────────────────────────────────── */
+.picker-list {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 0 24px 16px;
+}
+.picker-loading {
+  padding: 12px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  text-align: left;
+  transition: background 0.1s;
+}
+.picker-item:hover { background: var(--bg-hover); }
+.picker-item-icon { font-size: 16px; flex-shrink: 0; }
+.picker-item-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.picker-item-path {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+.picker-open {
+  padding: 4px 12px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.picker-open:hover { filter: brightness(1.1); }

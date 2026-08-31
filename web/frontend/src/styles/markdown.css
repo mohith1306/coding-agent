@@ -1,0 +1,89 @@
+/* ── Markdown Rendering ────────────────────────────────────── */
+.msg-content {
+  font-size: 14px;
+  line-height: 1.6;
+}
+.msg-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+.msg-content code {
+  padding: 1px 5px;
+  background: rgba(255,255,255,0.08);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+
+/* ── Code Blocks ──────────────────────────────────────────── */
+.code-block {
+  margin: 8px 0;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border-default);
+}
+.code-block-lang {
+  padding: 4px 12px;
+  background: var(--bg-active);
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ── Markdown Elements ────────────────────────────────────── */
+.md-paragraph {
+  margin: 0 0 8px;
+}
+.md-list {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.md-list-item {
+  margin-bottom: 4px;
+}
+.md-heading {
+  margin: 12px 0 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.md-heading:first-child {
+  margin-top: 0;
+}
+.md-blockquote {
+  margin: 8px 0;
+  padding: 8px 16px;
+  border-left: 3px solid var(--primary);
+  background: var(--bg-surface);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  color: var(--text-secondary);
+}
+.md-link {
+  color: var(--primary-hover);
+  text-decoration: none;
+}
+.md-link:hover {
+  text-decoration: underline;
+}
+.md-table-wrap {
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.md-table th,
+.md-table td {
+  padding: 6px 12px;
+  border: 1px solid var(--border-default);
+  text-align: left;
+}
+.md-table th {
+  background: var(--bg-surface);
+  font-weight: 600;
+}
+.md-table tr:nth-child(even) {
+  background: var(--bg-elevated);
+}

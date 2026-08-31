@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -757,6 +757,116 @@ def _close_all_sessions() -> None:
                     graph_pair[0].close()
                 except Exception as error:
                     logger.warning("Failed to close graph for session %s: %s", session_id, error)
+
+
+@app.websocket("/ws/terminal/{session_id}")
+async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
+    """WebSocket endpoint for PTY terminal access."""
+    import pty
+    import fcntl
+    import struct
+    import termios
+
+    await websocket.accept()
+    logger.info("Terminal WS connected for session %s", session_id)
+
+    # Create a pseudo-terminal
+    master_fd, slave_fd = pty.openpty()
+
+    # Set non-blocking on master_fd
+    flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
+    fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    # Send initial size
+    try:
+        size = struct.pack("HHHH", 24, 80, 0, 0)
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
+    except Exception:
+        pass
+
+    # Start shell in the slave end
+    cwd = str(ROOT)
+    session = _sessions.get(session_id)
+    if session and hasattr(session, "root"):
+        cwd = str(session.root)
+
+    pid = os.fork()
+    if pid == 0:
+        # Child process
+        os.close(master_fd)
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        os.dup2(slave_fd, 0)
+        os.dup2(slave_fd, 1)
+        os.dup2(slave_fd, 2)
+        os.close(slave_fd)
+        os.chdir(cwd)
+        shell = os.environ.get("SHELL", "/bin/zsh")
+        os.execvp(shell, [shell])
+    else:
+        # Parent process
+        os.close(slave_fd)
+
+        loop = asyncio.get_event_loop()
+        running = True
+
+        async def read_pty():
+            """Read from PTY and send to WebSocket."""
+            while running:
+                try:
+                    await asyncio.sleep(0.01)
+                    data = os.read(master_fd, 4096)
+                    if data:
+                        await websocket.send_text(data.decode("utf-8", errors="replace"))
+                except OSError:
+                    break
+                except Exception as e:
+                    logger.debug("PTY read error: %s", e)
+                    break
+
+        async def write_pty():
+            """Read from WebSocket and write to PTY."""
+            nonlocal running
+            while running:
+                try:
+                    data = await websocket.receive_text()
+                    if data:
+                        os.write(master_fd, data.encode("utf-8"))
+                except WebSocketDisconnect:
+                    running = False
+                    break
+                except Exception as e:
+                    logger.debug("PTY write error: %s", e)
+                    running = False
+                    break
+
+        # Run both tasks
+        read_task = asyncio.create_task(read_pty())
+        write_task = asyncio.create_task(write_pty())
+
+        # Wait for either to complete (disconnection)
+        done, pending = await asyncio.wait(
+            [read_task, write_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        # Cancel pending tasks
+        for task in pending:
+            task.cancel()
+
+        # Cleanup
+        running = False
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+            os.waitpid(pid, 0)
+        except (OSError, ChildProcessError):
+            pass
+
+        logger.info("Terminal WS disconnected for session %s", session_id)
 
 
 @app.on_event("shutdown")

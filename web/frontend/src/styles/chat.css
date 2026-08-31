@@ -1,0 +1,170 @@
+/* ── Chat Panel ────────────────────────────────────────────── */
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 300px;
+  background: var(--bg-base);
+  overflow: hidden;
+}
+
+.messages-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.messages::-webkit-scrollbar { width: 6px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}
+.messages::-webkit-scrollbar-thumb:hover { background: var(--border-strong); }
+
+/* ── Empty state ──────────────────────────────────────────── */
+.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 14px;
+  text-align: center;
+  padding: 24px;
+}
+
+/* ── Messages ─────────────────────────────────────────────── */
+.msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  font-size: 14px;
+  line-height: 1.55;
+  word-wrap: break-word;
+}
+.msg.user {
+  align-self: flex-end;
+  background: var(--agent-user-bg);
+  color: var(--agent-user-text);
+  border-bottom-right-radius: var(--radius-sm);
+}
+.msg.agent {
+  align-self: flex-start;
+  background: var(--agent-assistant-bg);
+  border: 1px solid var(--agent-assistant-border);
+  border-bottom-left-radius: var(--radius-sm);
+}
+.msg pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: inherit;
+}
+.msg code {
+  padding: 1px 5px;
+  background: rgba(255,255,255,0.08);
+  border-radius: var(--radius-sm);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+}
+.msg.streaming { opacity: 0.9; }
+
+/* ── Action bullets ───────────────────────────────────────── */
+.action-bullets {
+  margin: 0 0 6px 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+.action-bullets li {
+  color: var(--success);
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+/* ── Streaming caret ──────────────────────────────────────── */
+.caret {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--success);
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  animation: blink 1s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* ── Typing indicator ─────────────────────────────────────── */
+.typing {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 4px 0;
+}
+
+/* ── Status bar ───────────────────────────────────────────── */
+.status-bar {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Confirmation ─────────────────────────────────────────── */
+.confirm-preview {
+  max-height: 200px;
+  overflow: auto;
+  padding: 8px;
+  margin: 8px 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+}
+.muted { color: var(--text-muted); font-size: 13px; }
+.actions { display: flex; gap: 8px; margin-top: 10px; }
+.btn.yes {
+  padding: 6px 16px;
+  background: var(--success);
+  color: #fff;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+}
+.btn.yes:hover { filter: brightness(1.1); }
+.btn.no {
+  padding: 6px 16px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-radius: var(--radius-md);
+}
+.btn.no:hover { background: var(--bg-active); color: var(--text-primary); }
+
+/* ── Agent progress ───────────────────────────────────────── */
+.agent-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0;
+}
+.agent-node {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.agent-node.running { color: var(--text-secondary); }
+.agent-node.completed { color: var(--success); }
+.agent-node.error { color: var(--error); }
+.node-indicator { width: 14px; text-align: center; font-size: 11px; }
+.node-name { flex: 1; text-transform: capitalize; }
+.node-latency { color: var(--text-muted); font-size: 11px; }
