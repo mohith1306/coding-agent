@@ -15,7 +15,7 @@ from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
 
-from .db import get_connection, init_db
+from .db import get_connection, return_connection, init_db
 
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ class MemoryStore:
             conn.rollback()
             logger.warning("Failed to add turn: %s", error)
         finally:
-            conn.close()
+            return_connection(conn)
 
     def recent_turns(self, limit: int = 5) -> list[dict[str, str]]:
         """Get recent chat turns ordered by timestamp."""
@@ -128,7 +128,7 @@ class MemoryStore:
             logger.warning("Failed to get recent turns: %s", error)
             return []
         finally:
-            conn.close()
+            return_connection(conn)
 
     # -- file events --
 
@@ -161,7 +161,7 @@ class MemoryStore:
             conn.rollback()
             logger.warning("Failed to add file event: %s", error)
         finally:
-            conn.close()
+            return_connection(conn)
 
     # -- tasks --
 
@@ -197,7 +197,7 @@ class MemoryStore:
             conn.rollback()
             logger.warning("Failed to add task: %s", error)
         finally:
-            conn.close()
+            return_connection(conn)
 
     # -- preferences / key-value --
 
@@ -230,7 +230,7 @@ class MemoryStore:
             conn.rollback()
             logger.warning("Failed to set preference: %s", error)
         finally:
-            conn.close()
+            return_connection(conn)
 
     def get_preference(self, key: str) -> Optional[str]:
         """Get a preference value by key."""
@@ -255,7 +255,7 @@ class MemoryStore:
             logger.warning("Failed to get preference: %s", error)
             return None
         finally:
-            conn.close()
+            return_connection(conn)
 
     def list_preferences(self, limit: int = 50) -> list[dict[str, str]]:
         """List all preferences."""
@@ -287,7 +287,7 @@ class MemoryStore:
             logger.warning("Failed to list preferences: %s", error)
             return []
         finally:
-            conn.close()
+            return_connection(conn)
 
     # -- vector retrieval (stubbed for now) --
 
@@ -343,7 +343,7 @@ class MemoryStore:
             logger.warning("Failed to get by type: %s", error)
             return []
         finally:
-            conn.close()
+            return_connection(conn)
 
     def get_all_by_type(self, doc_type: str) -> list[dict]:
         """Fetch every document of a type."""
@@ -380,4 +380,4 @@ class MemoryStore:
             conn.rollback()
             logger.warning("Failed to delete by ids: %s", error)
         finally:
-            conn.close()
+            return_connection(conn)

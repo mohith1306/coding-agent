@@ -2,17 +2,19 @@
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
 
 
 logger = logging.getLogger(__name__)
 
-_pool: Optional[SimpleConnectionPool] = None
+_pool: Optional[ThreadedConnectionPool] = None
+_pool_lock = threading.Lock()
 
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -36,12 +38,26 @@ def get_connection():
     global _pool
     if _pool is None:
         init_db()
-    return _pool.connection()
+    return _pool.getconn()
+
+
+def return_connection(conn) -> None:
+    """Return a connection to the pool."""
+    global _pool
+    if _pool is not None and conn is not None:
+        try:
+            _pool.putconn(conn)
+        except Exception:
+            logger.warning("Failed to return connection to pool")
 
 
 def init_db() -> None:
-    """Initialize the connection pool and create tables."""
+    """Initialize the connection pool and run migrations."""
     global _pool
+
+    with _pool_lock:
+        if _pool is not None:
+            return
 
     _load_dotenv(Path.cwd() / ".env")
     _load_dotenv(Path(__file__).parent.parent / ".env")
@@ -53,39 +69,66 @@ def init_db() -> None:
             "Example: DATABASE_URL=postgresql://postgres:postgres@localhost:5432/coding_agent"
         )
 
-    # Create connection pool
-    if _pool is None:
-        _pool = SimpleConnectionPool(1, 10, database_url)
-        logger.info("Database connection pool created")
+    # Create threaded connection pool
+    with _pool_lock:
+        if _pool is None:
+            _pool = ThreadedConnectionPool(1, 10, database_url)
+            logger.info("Database connection pool created")
 
     # Run migrations
     _run_migrations()
 
 
 def _run_migrations() -> None:
-    """Run SQL migration files."""
-    conn = _pool.connection()
+    """Discover and run all pending SQL migration files in order."""
+    global _pool
+
+    conn = _pool.getconn()
     try:
         with conn.cursor() as cur:
-            # Read and execute migration files
-            migration_file = MIGRATIONS_DIR / "001_init.sql"
-            if migration_file.exists():
+            # Create migrations tracking table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version VARCHAR(50) PRIMARY KEY,
+                    applied_at TIMESTAMPTZ DEFAULT NOW()
+                )
+            """)
+
+            # Discover migration files
+            migration_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+            for migration_file in migration_files:
+                version = migration_file.stem
+                # Check if already applied
+                cur.execute(
+                    "SELECT 1 FROM schema_migrations WHERE version = %s",
+                    (version,),
+                )
+                if cur.fetchone():
+                    continue
+
+                # Apply migration
                 sql = migration_file.read_text(encoding="utf-8")
                 cur.execute(sql)
-                logger.info("Applied migration: 001_init.sql")
+                cur.execute(
+                    "INSERT INTO schema_migrations (version) VALUES (%s)",
+                    (version,),
+                )
+                logger.info("Applied migration: %s", version)
+
         conn.commit()
     except Exception as error:
         conn.rollback()
         logger.error("Migration failed: %s", error)
         raise
     finally:
-        conn.close()
+        _pool.putconn(conn)
 
 
 def close_pool() -> None:
     """Close all connections in the pool."""
     global _pool
-    if _pool is not None:
-        _pool.closeall()
-        _pool = None
-        logger.info("Database connection pool closed")
+    with _pool_lock:
+        if _pool is not None:
+            _pool.closeall()
+            _pool = None
+            logger.info("Database connection pool closed")

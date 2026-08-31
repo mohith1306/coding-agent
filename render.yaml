@@ -12,9 +12,12 @@ services:
         sync: false
       - key: CODING_AGENT_INTENT_MODEL
         value: llama-3.3-70b-versatile
-      - key: CHROMA_TENANT
-        sync: false
-      - key: CHROMA_DATABASE
-        sync: false
-      - key: CHROMA_API_KEY
-        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: coding-agent-db
+          property: connectionString
+
+databases:
+  - name: coding-agent-db
+    plan: free
+    databaseName: coding_agent

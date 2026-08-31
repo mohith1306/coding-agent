@@ -2,7 +2,7 @@
 -- Replaces ChromaDB collection with proper relational tables
 
 CREATE TABLE IF NOT EXISTS agent_memory (
-    id UUID PRIMARY KEY,
+    id TEXT PRIMARY KEY,
     doc_type VARCHAR(50) NOT NULL,
     content TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}',
