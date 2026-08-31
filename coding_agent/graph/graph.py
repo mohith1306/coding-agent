@@ -176,7 +176,9 @@ class AgentGraph:
 
         start = time.perf_counter()
         try:
-            result = self._graph.invoke(initial_state, config=self._deps)
+            # LangGraph expects deps in {"configurable": {...}} format
+            graph_config = {"configurable": self._deps}
+            result = self._graph.invoke(initial_state, config=graph_config)
             result["latency_ms"] = round((time.perf_counter() - start) * 1000, 1)
             logger.info(
                 "Graph completed in %.1fms (path=%s, repair_attempts=%d)",
@@ -234,7 +236,9 @@ class AgentGraph:
 
         start = time.perf_counter()
         try:
-            result = await self._graph.ainvoke(initial_state, config=self._deps)
+            # LangGraph expects deps in {"configurable": {...}} format
+            graph_config = {"configurable": self._deps}
+            result = await self._graph.ainvoke(initial_state, config=graph_config)
             result["latency_ms"] = round((time.perf_counter() - start) * 1000, 1)
             return result
         except Exception as error:

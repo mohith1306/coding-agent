@@ -1,0 +1,26 @@
+/* ── Terminal Panel ────────────────────────────────────────── */
+.terminal-pane {
+  height: 200px;
+  min-height: 100px;
+  background: var(--bg-deepest);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.terminal-container {
+  background: var(--bg-deepest);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.terminal-container .xterm {
+  padding: 8px;
+}
+.terminal-container .xterm-viewport::-webkit-scrollbar {
+  width: 6px;
+}
+.terminal-container .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
+.terminal-container .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 3px;
+}

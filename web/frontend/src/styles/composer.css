@@ -1,0 +1,178 @@
+/* ── Chat Composer ─────────────────────────────────────────── */
+.composer-form {
+  padding: 12px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.composer-box {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  transition: all 0.2s ease;
+  overflow: hidden;
+}
+.composer-box.focused {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary), 0 2px 8px rgba(59, 130, 246, 0.15);
+}
+.composer-box.busy {
+  opacity: 0.7;
+}
+
+.composer-textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 12px 14px 4px;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  font-family: inherit;
+}
+.composer-textarea::placeholder {
+  color: var(--text-placeholder);
+}
+.composer-textarea:disabled {
+  cursor: not-allowed;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────── */
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 8px;
+  gap: 8px;
+}
+
+.toolbar-left,
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  transition: all 0.15s;
+}
+.toolbar-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.toolbar-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+/* ── Model Selector ───────────────────────────────────────── */
+.model-select-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.model-select {
+  appearance: none;
+  padding: 4px 24px 4px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s;
+  outline: none;
+}
+.model-select:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.model-select:focus {
+  border-color: var(--primary);
+}
+.model-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-select-icon {
+  position: absolute;
+  right: 8px;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+/* ── Send Button ──────────────────────────────────────────── */
+.send-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  background: var(--primary);
+  color: #fff;
+  transition: all 0.15s;
+}
+.send-btn:hover:not(:disabled) {
+  background: var(--primary-hover);
+  transform: scale(1.05);
+}
+.send-btn:disabled {
+  background: var(--bg-active);
+  color: var(--text-muted);
+  cursor: not-allowed;
+  transform: none;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ── Hints ────────────────────────────────────────────────── */
+.composer-hints {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.composer-hints span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.composer-hints kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-default);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 10px;
+  color: var(--text-muted);
+}

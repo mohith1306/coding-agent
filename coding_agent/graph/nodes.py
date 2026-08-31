@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.runnables import RunnableConfig
 
 from .config import (
     CONFIRMATION_MARKER,
@@ -37,10 +38,17 @@ def _elapsed_ms(start: float) -> float:
     return round((time.perf_counter() - start) * 1000, 1)
 
 
+def _get_deps(config: Optional[RunnableConfig]) -> dict[str, Any]:
+    """Extract dependencies from LangGraph config."""
+    if config is None:
+        return {}
+    return config.get("configurable", {})
+
+
 # ─── Node: understand_request ────────────────────────────────────────
 
 
-def understand_request(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def understand_request(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Parse the user request and identify intent.
 
     Wraps existing IntentParser.parse() logic.
@@ -48,6 +56,7 @@ def understand_request(state: AgentState, config: dict[str, Any]) -> dict[str, A
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Understanding your request…"})
 
+    deps = _get_deps(config)
     user_message = state.get("user_message", "")
     conversation = state.get("conversation", [])
 
@@ -58,7 +67,7 @@ def understand_request(state: AgentState, config: dict[str, Any]) -> dict[str, A
             history.append(msg)
 
     # Get intent parser from config (injected at graph creation)
-    intent_parser = config.get("intent_parser")
+    intent_parser = deps.get("intent_parser")
     if intent_parser is None:
         raise RuntimeError("intent_parser not provided in config")
 
@@ -105,7 +114,7 @@ def understand_request(state: AgentState, config: dict[str, Any]) -> dict[str, A
 # ─── Node: build_context ─────────────────────────────────────────────
 
 
-def build_context(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def build_context(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Build repository context for the agent.
 
     Wraps existing ContextBuilder.build() logic.
@@ -113,11 +122,12 @@ def build_context(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Building context…"})
 
+    deps = _get_deps(config)
     user_message = state.get("user_message", "")
     intent = state.get("intent", {})
     intent_name = intent.get("name", "unknown") if intent else "unknown"
 
-    context_builder = config.get("context_builder")
+    context_builder = deps.get("context_builder")
     if context_builder is None:
         raise RuntimeError("context_builder not provided in config")
 
@@ -143,6 +153,7 @@ def build_context(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 
     # Build formatted context for prompt
     formatted = context_builder.format_for_prompt(context)
+    context_dict["formatted"] = formatted
 
     # Retrieve relevant memory
     relevant_files = []
@@ -168,7 +179,7 @@ def build_context(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: plan ──────────────────────────────────────────────────────
 
 
-def plan(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def plan(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Create an execution plan from the intent.
 
     Wraps existing Planner.create_plan() logic.
@@ -176,12 +187,13 @@ def plan(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Planning…"})
 
+    deps = _get_deps(config)
     intent = state.get("intent", {})
     intent_name = intent.get("name", "unknown") if intent else "unknown"
     target = intent.get("target", "") if intent else ""
     raw_message = state.get("user_message", "")
 
-    planner = config.get("planner")
+    planner = deps.get("planner")
     if planner is None:
         raise RuntimeError("planner not provided in config")
 
@@ -201,7 +213,7 @@ def plan(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: agent ─────────────────────────────────────────────────────
 
 
-def agent(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Main LLM reasoning node.
 
     Calls the LLM with the current state, context, and available tools.
@@ -211,6 +223,7 @@ def agent(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Thinking…"})
 
+    deps = _get_deps(config)
     user_message = state.get("user_message", "")
     intent = state.get("intent", {})
     context = state.get("context")
@@ -221,9 +234,9 @@ def agent(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     intent_name = intent.get("name", "unknown") if intent else "unknown"
     intent_target = intent.get("target", "") if intent else ""
 
-    llm = config.get("llm")
-    tool_registry = config.get("tool_registry")
-    prompts_dir = config.get("prompts_dir", Path(__file__).parent.parent / "prompts")
+    llm = deps.get("llm")
+    tool_registry = deps.get("tool_registry")
+    prompts_dir = deps.get("prompts_dir", Path(__file__).parent.parent / "prompts")
 
     if llm is None:
         raise RuntimeError("llm not provided in config")
@@ -355,7 +368,7 @@ def agent(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: tools ─────────────────────────────────────────────────────
 
 
-def execute_tools(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def execute_tools(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Execute tool calls returned by the agent node.
 
     Runs each tool call and collects results.
@@ -363,8 +376,9 @@ def execute_tools(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Executing tools…"})
 
+    deps = _get_deps(config)
     tool_calls = state.get("tool_calls", [])
-    tool_registry = config.get("tool_registry")
+    tool_registry = deps.get("tool_registry")
 
     if not tool_calls:
         return {"tool_results": []}
@@ -427,7 +441,7 @@ def execute_tools(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: verify ────────────────────────────────────────────────────
 
 
-def verify(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def verify(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Verify modifications by running compile checks, lint, and tests.
 
     Wraps existing Verifier.verify_file() logic.
@@ -435,6 +449,7 @@ def verify(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Verifying changes…"})
 
+    deps = _get_deps(config)
     changed_files = state.get("changed_files", [])
     context = state.get("context")
 
@@ -443,7 +458,7 @@ def verify(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
             "verification_result": {"passed": True, "message": "No files changed."},
         }
 
-    verifier = config.get("verifier")
+    verifier = deps.get("verifier")
     if verifier is None:
         return {
             "verification_result": {"passed": True, "message": "No verifier configured."},
@@ -472,7 +487,7 @@ def verify(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
 
-    root = config.get("root", Path.cwd())
+    root = deps.get("root", Path.cwd())
     all_passed = True
     results = []
 
@@ -513,7 +528,7 @@ def verify(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: repair ────────────────────────────────────────────────────
 
 
-def repair(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def repair(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Provide failure context for the agent to fix.
 
     This node doesn't do the actual repair — it updates state
@@ -538,7 +553,7 @@ def repair(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
 # ─── Node: finish ────────────────────────────────────────────────────
 
 
-def finish(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
+def finish(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[str, Any]:
     """Produce the final response.
 
     Summarizes changes, test results, and any remaining issues.
@@ -546,6 +561,7 @@ def finish(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     start = time.perf_counter()
     _emit({"type": "phase", "message": "Finalizing…"})
 
+    deps = _get_deps(config)
     final_response = state.get("final_response", "")
     changed_files = state.get("changed_files", [])
     verification = state.get("verification_result")
@@ -593,7 +609,7 @@ def finish(state: AgentState, config: dict[str, Any]) -> dict[str, Any]:
     response = "\n\n".join(parts)
 
     # Record memory
-    memory = config.get("memory")
+    memory = deps.get("memory")
     if memory:
         try:
             intent_name = intent.get("name", "unknown") if intent else "unknown"
