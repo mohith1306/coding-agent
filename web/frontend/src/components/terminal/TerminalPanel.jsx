@@ -8,9 +8,12 @@ export default function TerminalPanel({ sessionId, onResize }) {
   const termRef = useRef(null);
   const fitAddonRef = useRef(null);
   const wsRef = useRef(null);
+  const intentionalCloseRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
+
+    intentionalCloseRef.current = false;
 
     const term = new Terminal({
       cursorBlink: true,
@@ -64,7 +67,9 @@ export default function TerminalPanel({ sessionId, onResize }) {
     };
 
     ws.onclose = () => {
-      term.write("\r\n\x1b[33m[Connection closed]\x1b[0m\r\n");
+      if (!intentionalCloseRef.current) {
+        term.write("\r\n\x1b[33m[Connection closed]\x1b[0m\r\n");
+      }
     };
 
     ws.onerror = (err) => {
@@ -93,6 +98,7 @@ export default function TerminalPanel({ sessionId, onResize }) {
 
     return () => {
       resizeObserver.disconnect();
+      intentionalCloseRef.current = true;
       ws.close();
       term.dispose();
     };
