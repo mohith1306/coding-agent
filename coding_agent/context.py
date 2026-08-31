@@ -58,13 +58,31 @@ class ContextBuilder:
 
     def get_or_create_project_context(self) -> str:
         """Get existing project context or create initial context for new project."""
+        # Clear any stale content first
+        self.project_context.clear_stale_content()
+
         if not self.project_context.exists():
             initial_context = self.project_context.generate_initial_context(self)
             self.project_context.save(initial_context)
             return ""
+
+        # Check if context is stale (path mismatch)
+        existing = self.project_context.load()
+        if existing:
+            for line in existing.split("\n"):
+                if line.startswith("**Path**:"):
+                    context_path = line.replace("**Path**:", "").strip().strip("`")
+                    if context_path != str(self.root):
+                        logger.info("Context is stale (path mismatch: %s vs %s), regenerating", context_path, self.root)
+                        self.project_context.context_file.unlink(missing_ok=True)
+                        initial_context = self.project_context.generate_initial_context(self)
+                        self.project_context.save(initial_context)
+                        return ""
+                    break
+
         return self.project_context.get_context_for_prompt()
 
-    def build(self, user_message: str) -> AgentContext:
+    def build(self, user_message: str, load_context: bool = False) -> AgentContext:
         chat_history = self.memory.recent_turns(5)
         last_turn = chat_history[-1] if chat_history else {}
         last_intent = last_turn.get("intent", "")
@@ -82,8 +100,10 @@ class ContextBuilder:
         branch, dirty_files = self._git_status()
         identity = self._detect_project_identity()
 
-        # Load or create project context
-        project_context = self.get_or_create_project_context()
+        # Only load/create project context when explicitly requested
+        project_context = ""
+        if load_context:
+            project_context = self.get_or_create_project_context()
 
         return AgentContext(
             chat_history=chat_history,

@@ -3,3 +3,13 @@ uvicorn>=0.27
 chromadb>=1.5.0
 daytona>=0.198.0
 eval_type_backport>=0.2.0
+
+# LangGraph agent orchestration
+langgraph>=0.2.0
+
+# LangChain LLM/tool abstractions
+langchain>=0.3.0
+langchain-openai>=0.2.0
+
+# LangSmith tracing and observability
+langsmith>=0.2.0

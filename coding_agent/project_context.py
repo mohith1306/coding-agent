@@ -68,7 +68,37 @@ class ProjectContext:
         content = self.load()
         if not content:
             return ""
+
+        # Check if context is stale (contains old LLM-generated DSA content)
+        if self._is_stale_content(content):
+            logger.info("Context contains stale LLM-generated content, clearing")
+            self.save("")
+            return ""
+
         return f"\n\n--- Project Context (from previous sessions) ---\n{content}"
+
+    def _is_stale_content(self, content: str) -> bool:
+        """Check if context contains stale LLM-generated content."""
+        # Detect old LLM-generated content patterns
+        stale_patterns = [
+            "DSA Folder Structure",
+            "sliding_window.py",
+            "two_pointers.py",
+            "binary_search.py",
+            "**Location:** `DSA/`",
+            "**Files Present:**",
+            "What Each File Does",
+            "Purpose & Usage",
+            "Next Steps",
+        ]
+        return any(pattern in content for pattern in stale_patterns)
+
+    def clear_stale_content(self) -> None:
+        """Clear the context file if it contains stale content."""
+        content = self.load()
+        if content and self._is_stale_content(content):
+            logger.info("Clearing stale context from %s", self.context_file)
+            self.save("")
 
     def generate_initial_context(self, context_builder: "ContextBuilder") -> str:
         """Generate initial project context by analyzing the project.
@@ -169,6 +199,11 @@ class ProjectContext:
         Appends new learnings from the conversation.
         """
         if not self.exists():
+            return
+
+        # Check if the response contains stale content before appending
+        if self._is_stale_content(agent_response):
+            logger.info("Skipping update - response contains stale content")
             return
 
         # Build the update section

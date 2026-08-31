@@ -32,6 +32,20 @@ from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.events import reset_event_sink, set_event_sink
 from coding_agent.memory import MemoryStore
 
+# LangGraph runtime (optional)
+_agent_graph_cls = None
+try:
+    from coding_agent.graph import AgentGraph
+    from coding_agent.tools.registry import ToolRegistry
+    from coding_agent.llm import create_llm
+    from coding_agent.context import ContextBuilder
+    from coding_agent.intent import IntentParser
+    from coding_agent.planner import Planner
+    from coding_agent.verifier import Verifier
+    _agent_graph_cls = AgentGraph
+except ImportError as _graph_err:
+    logger.info("LangGraph runtime not available: %s", _graph_err)
+
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +134,10 @@ PROJECT_SCAN_DIRS = [
 
 _lock = threading.Lock()
 _sessions: dict[str, tuple[CodingAgent, MemoryStore]] = {}
+_graph_sessions: dict[str, tuple] = {}  # session_id -> (AgentGraph, MemoryStore)
 _running_procs: dict[str, subprocess.Popen] = {}
+
+use_graph_runtime = os.getenv("CODING_AGENT_USE_GRAPH", "true").lower() == "true"
 
 
 class ChatRequest(BaseModel):
@@ -456,12 +473,17 @@ def delete_session(session_id: str):
     """Release a session: close its terminal (freeing any Daytona sandbox)."""
     with _lock:
         agent, _ = _sessions.pop(session_id, (None, None))
-    if agent is None:
-        return {"deleted": False}
-    try:
-        agent.terminal.close()
-    except Exception as error:
-        logger.warning("Failed to close terminal for session %s: %s", session_id, error)
+        graph_pair = _graph_sessions.pop(session_id, None)
+    if agent is not None:
+        try:
+            agent.terminal.close()
+        except Exception as error:
+            logger.warning("Failed to close terminal for session %s: %s", session_id, error)
+    if graph_pair is not None:
+        try:
+            graph_pair[0].close()
+        except Exception as error:
+            logger.warning("Failed to close graph for session %s: %s", session_id, error)
     logger.info("Deleted session %s", session_id)
     return {"deleted": True}
 
@@ -501,6 +523,12 @@ async def chat_stream(request: ChatRequest):
     agent, session_id = _get_agent(request.session_id)
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat stream [%s] session=%s: %.200s", flag, session_id, request.message)
+
+    # Use graph runtime if available and enabled
+    if use_graph_runtime and _agent_graph_cls is not None:
+        return _graph_chat_stream(request, agent.root, session_id)
+
+    # Legacy runtime
     events: queue.Queue = queue.Queue()
 
     def worker() -> None:
@@ -521,6 +549,89 @@ async def chat_stream(request: ChatRequest):
 
     threading.Thread(target=worker, daemon=True).start()
     return _sse_response(events)
+
+
+def _graph_chat_stream(request: ChatRequest, root: Path, session_id: str):
+    """Stream LangGraph events mapped to the existing frontend event model."""
+    events: queue.Queue = queue.Queue()
+
+    def worker() -> None:
+        try:
+            graph, memory, sid = _get_or_create_graph(session_id, root)
+
+            # Run graph synchronously; nodes emit events via the event system
+            import queue as _queue
+
+            graph_events: _queue.Queue = _queue.Queue()
+
+            def event_sink(event: dict) -> None:
+                graph_events.put_nowait(event)
+
+            token = set_event_sink(event_sink)
+            try:
+                result = graph.invoke(
+                    request.message,
+                    confirmed=request.confirmed,
+                    session_id=sid,
+                )
+
+                # Drain graph events
+                while not graph_events.empty():
+                    try:
+                        events.put(graph_events.get_nowait())
+                    except _queue.Empty:
+                        break
+
+                # Emit final response if not already emitted
+                final_response = result.get("final_response", "")
+                has_done = False
+                temp = []
+                while not events.empty():
+                    try:
+                        e = events.get_nowait()
+                        temp.append(e)
+                        if e.get("type") == "done":
+                            has_done = True
+                    except _queue.Empty:
+                        break
+                for e in temp:
+                    events.put(e)
+
+                if not has_done and final_response:
+                    events.put({"type": "done", "response": final_response})
+                elif not has_done and not final_response:
+                    events.put({"type": "done", "response": "Task completed."})
+
+            finally:
+                reset_event_sink(token)
+
+        except Exception as error:
+            logger.warning("Graph stream failed, falling back to legacy: %s", error)
+            # Fall back to legacy runtime
+            _legacy_chat_stream(request, events, session_id)
+        finally:
+            events.put(None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return _sse_response(events)
+
+
+def _legacy_chat_stream(request: ChatRequest, events: queue.Queue, session_id: str):
+    """Run the legacy CodingAgent in a streaming fashion."""
+    agent, _ = _get_agent(request.session_id)
+    token = set_event_sink(events.put)
+    try:
+        response_text = agent.handle(request.message, confirmed=request.confirmed)
+        if response_text.startswith(CONFIRMATION_MARKER):
+            action, target = _parse_confirmation(response_text)
+            events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
+        else:
+            events.put({"type": "done", "response": response_text})
+    except Exception as error:
+        logger.exception("Legacy agent stream failed for session %s", session_id)
+        events.put({"type": "error", "message": str(error)})
+    finally:
+        reset_event_sink(token)
 
 
 def _queue_put(events: queue.Queue, item: Optional[dict]) -> None:
@@ -582,6 +693,44 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
         return _sessions[session_id][0], session_id
 
 
+def _get_or_create_graph(session_id: str, root: Path) -> tuple:
+    """Get or create an AgentGraph for the given session."""
+    with _lock:
+        if session_id in _graph_sessions:
+            graph, memory = _graph_sessions[session_id]
+            return graph, memory, session_id
+
+    # Build new graph outside lock
+    memory = MemoryStore()
+    intent_parser = IntentParser()
+    context_builder = ContextBuilder(memory, root=root)
+    planner = Planner()
+    tool_registry = ToolRegistry(root)
+    verifier = Verifier(root=root, terminal=tool_registry.terminal)
+
+    try:
+        llm = create_llm()
+    except RuntimeError as error:
+        logger.warning("LLM unavailable for graph session: %s", error)
+        raise HTTPException(status_code=500, detail=f"LLM not configured: {error}")
+
+    graph = _agent_graph_cls(
+        root=root,
+        llm=llm,
+        tool_registry=tool_registry,
+        intent_parser=intent_parser,
+        context_builder=context_builder,
+        planner=planner,
+        verifier=verifier,
+        memory=memory,
+    )
+
+    with _lock:
+        _graph_sessions[session_id] = (graph, memory)
+
+    return graph, memory, session_id
+
+
 def _session_workspace(session_id: str) -> Path:
     """The directory the session's agent operates on (project root or sandbox)."""
     with _lock:
@@ -600,6 +749,14 @@ def _close_all_sessions() -> None:
                     agent.terminal.close()
                 except Exception as error:
                     logger.warning("Failed to close terminal for session %s: %s", session_id, error)
+        graph_ids = list(_graph_sessions.keys())
+        for session_id in graph_ids:
+            graph_pair = _graph_sessions.pop(session_id, None)
+            if graph_pair is not None:
+                try:
+                    graph_pair[0].close()
+                except Exception as error:
+                    logger.warning("Failed to close graph for session %s: %s", session_id, error)
 
 
 @app.on_event("shutdown")
