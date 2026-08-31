@@ -144,6 +144,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str = ""
     confirmed: bool = False
+    model: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -557,7 +558,7 @@ def _graph_chat_stream(request: ChatRequest, root: Path, session_id: str):
 
     def worker() -> None:
         try:
-            graph, memory, sid = _get_or_create_graph(session_id, root)
+            graph, memory, sid = _get_or_create_graph(session_id, root, model=request.model)
 
             # Run graph synchronously; nodes emit events via the event system
             import queue as _queue
@@ -693,12 +694,18 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
         return _sessions[session_id][0], session_id
 
 
-def _get_or_create_graph(session_id: str, root: Path) -> tuple:
+def _get_or_create_graph(session_id: str, root: Path, model: str = "") -> tuple:
     """Get or create an AgentGraph for the given session."""
     with _lock:
         if session_id in _graph_sessions:
             graph, memory = _graph_sessions[session_id]
-            return graph, memory, session_id
+            # If model changed, recreate the graph
+            if model and hasattr(graph, '_model') and graph._model != model:
+                logger.info("Model changed from %s to %s, recreating graph", graph._model, model)
+                graph.close()
+                del _graph_sessions[session_id]
+            else:
+                return graph, memory, session_id
 
     # Build new graph outside lock
     memory = MemoryStore()
@@ -709,7 +716,7 @@ def _get_or_create_graph(session_id: str, root: Path) -> tuple:
     verifier = Verifier(root=root, terminal=tool_registry.terminal)
 
     try:
-        llm = create_llm()
+        llm = create_llm(model=model if model else None)
     except RuntimeError as error:
         logger.warning("LLM unavailable for graph session: %s", error)
         raise HTTPException(status_code=500, detail=f"LLM not configured: {error}")
@@ -724,6 +731,7 @@ def _get_or_create_graph(session_id: str, root: Path) -> tuple:
         verifier=verifier,
         memory=memory,
     )
+    graph._model = model  # Store model for comparison
 
     with _lock:
         _graph_sessions[session_id] = (graph, memory)
@@ -766,9 +774,18 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
     import fcntl
     import struct
     import termios
+    import select
+
+    # Validate session exists before accepting
+    workspace = _session_workspace(session_id)
+    if not workspace.is_dir():
+        await websocket.accept()
+        await websocket.send_text("Error: Session not found or no workspace.\n")
+        await websocket.close()
+        return
 
     await websocket.accept()
-    logger.info("Terminal WS connected for session %s", session_id)
+    logger.info("Terminal WS connected for session %s (workspace: %s)", session_id, workspace)
 
     # Create a pseudo-terminal
     master_fd, slave_fd = pty.openpty()
@@ -777,96 +794,118 @@ async def terminal_ws(websocket: WebSocket, session_id: str) -> None:
     flags = fcntl.fcntl(master_fd, fcntl.F_GETFL)
     fcntl.fcntl(master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-    # Send initial size
+    # Initial size
+    initial_rows, initial_cols = 24, 80
     try:
-        size = struct.pack("HHHH", 24, 80, 0, 0)
+        size = struct.pack("HHHH", initial_rows, initial_cols, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, size)
     except Exception:
         pass
 
-    # Start shell in the slave end
-    cwd = str(ROOT)
-    session = _sessions.get(session_id)
-    if session and hasattr(session, "root"):
-        cwd = str(session.root)
+    # Use subprocess with pty instead of os.fork (safer in async/multithreaded context)
+    cwd = str(workspace)
+    shell = os.environ.get("SHELL", "/bin/sh")
+    if not os.path.isfile(shell):
+        shell = "/bin/sh"
 
-    pid = os.fork()
-    if pid == 0:
-        # Child process
-        os.close(master_fd)
-        os.setsid()
-        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
-        os.dup2(slave_fd, 0)
-        os.dup2(slave_fd, 1)
-        os.dup2(slave_fd, 2)
-        os.close(slave_fd)
-        os.chdir(cwd)
-        shell = os.environ.get("SHELL", "/bin/zsh")
-        os.execvp(shell, [shell])
-    else:
-        # Parent process
-        os.close(slave_fd)
+    proc = subprocess.Popen(
+        [shell],
+        cwd=cwd,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        preexec_fn=os.setsid,
+    )
+    os.close(slave_fd)
 
-        loop = asyncio.get_event_loop()
-        running = True
+    running = True
 
-        async def read_pty():
-            """Read from PTY and send to WebSocket."""
-            while running:
-                try:
-                    await asyncio.sleep(0.01)
+    async def read_pty():
+        """Read from PTY and send to WebSocket."""
+        nonlocal running
+        while running:
+            try:
+                await asyncio.sleep(0.01)
+                # Use select to check if data is available before reading
+                r, _, _ = select.select([master_fd], [], [], 0)
+                if r:
                     data = os.read(master_fd, 4096)
                     if data:
                         await websocket.send_text(data.decode("utf-8", errors="replace"))
-                except OSError:
-                    break
-                except Exception as e:
-                    logger.debug("PTY read error: %s", e)
-                    break
+            except BlockingIOError:
+                # No data available yet, continue polling
+                continue
+            except OSError:
+                break
+            except Exception as e:
+                logger.debug("PTY read error: %s", e)
+                break
 
-        async def write_pty():
-            """Read from WebSocket and write to PTY."""
-            nonlocal running
-            while running:
+    async def write_pty():
+        """Read from WebSocket and write to PTY."""
+        nonlocal running
+        while running:
+            try:
+                data = await websocket.receive_text()
+                if not data:
+                    continue
+
+                # Check if this is a resize message
                 try:
-                    data = await websocket.receive_text()
-                    if data:
-                        os.write(master_fd, data.encode("utf-8"))
-                except WebSocketDisconnect:
-                    running = False
-                    break
-                except Exception as e:
-                    logger.debug("PTY write error: %s", e)
-                    running = False
-                    break
+                    msg = json.loads(data)
+                    if msg.get("type") == "resize":
+                        cols = msg.get("cols", 80)
+                        rows = msg.get("rows", 24)
+                        try:
+                            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+                            logger.debug("Terminal resize: %dx%d", cols, rows)
+                        except Exception as e:
+                            logger.debug("Resize failed: %s", e)
+                        continue
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
-        # Run both tasks
-        read_task = asyncio.create_task(read_pty())
-        write_task = asyncio.create_task(write_pty())
+                # Regular input - write to PTY
+                os.write(master_fd, data.encode("utf-8"))
+            except WebSocketDisconnect:
+                running = False
+                break
+            except Exception as e:
+                logger.debug("PTY write error: %s", e)
+                running = False
+                break
 
-        # Wait for either to complete (disconnection)
-        done, pending = await asyncio.wait(
-            [read_task, write_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+    # Run both tasks
+    read_task = asyncio.create_task(read_pty())
+    write_task = asyncio.create_task(write_pty())
 
-        # Cancel pending tasks
-        for task in pending:
-            task.cancel()
+    # Wait for either to complete (disconnection)
+    done, pending = await asyncio.wait(
+        [read_task, write_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
 
-        # Cleanup
-        running = False
+    # Cancel pending tasks
+    for task in pending:
+        task.cancel()
+
+    # Cleanup
+    running = False
+    try:
+        os.close(master_fd)
+    except OSError:
+        pass
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
         try:
-            os.close(master_fd)
-        except OSError:
-            pass
-        try:
-            os.kill(pid, signal.SIGTERM)
-            os.waitpid(pid, 0)
-        except (OSError, ChildProcessError):
+            proc.kill()
+        except Exception:
             pass
 
-        logger.info("Terminal WS disconnected for session %s", session_id)
+    logger.info("Terminal WS disconnected for session %s", session_id)
 
 
 @app.on_event("shutdown")

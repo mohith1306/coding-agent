@@ -1,4 +1,11 @@
 /* ── Terminal Panel ────────────────────────────────────────── */
+.terminal-pane {
+  height: 200px;
+  min-height: 100px;
+  background: var(--bg-deepest);
+  border-top: 1px solid var(--border-subtle);
+}
+
 .terminal-container {
   background: var(--bg-deepest);
   border-radius: var(--radius-md);

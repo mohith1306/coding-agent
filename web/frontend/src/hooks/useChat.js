@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { readSSE } from "../utils/sse";
 import { apiStream } from "../utils/api";
 
-export function useChat(patchTab, activeIdRef, refreshFiles) {
+export function useChat(patchTab, activeIdRef, refreshFiles, handleAgentEvent) {
   const send = useCallback(
     async (text, tab, confirmed = false) => {
       const id = activeIdRef.current;
@@ -55,6 +55,9 @@ export function useChat(patchTab, activeIdRef, refreshFiles) {
         let bullets = [];
 
         await readSSE(res, (event) => {
+          // Forward events to agent progress tracker
+          handleAgentEvent?.(event);
+
           if (event.type === "chunk") {
             accumulatedText += event.text;
             const snap = accumulatedText;

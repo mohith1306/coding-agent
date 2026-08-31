@@ -4,12 +4,15 @@ import { useSession } from "./hooks/useSession";
 import { useChat } from "./hooks/useChat";
 import { useResizable } from "./hooks/useResizable";
 import { useAgentProgress } from "./hooks/useAgentProgress";
+import { apiPost, apiGet } from "./utils/api";
 import FileExplorer from "./components/sidebar/FileExplorer";
 import EditorPanel from "./components/editor/EditorPanel";
+import Message from "./components/chat/Message";
 import ProjectPicker from "./components/chat/ProjectPicker";
 import ChatComposer from "./components/chat/ChatComposer";
 import ConfirmationDialog from "./components/chat/ConfirmationDialog";
 import AgentStatusBar from "./components/agent/AgentStatusBar";
+import TerminalPanel from "./components/terminal/TerminalPanel";
 import Divider from "./components/layout/Divider";
 
 export default function App() {
@@ -30,6 +33,7 @@ export default function App() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [cwd, setCwd] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const endRef = useRef(null);
 
   const { sizes, startResize, containerRef } = useResizable(
@@ -49,7 +53,7 @@ export default function App() {
   } = useSession(patchTab, activeIdRef);
 
   const { send, decide } = useChat(patchTab, activeIdRef, () =>
-    refreshFiles(tab, patchTab)
+    refreshFiles(tab, patchTab), handleAgentEvent
   );
 
   // Sync active ID ref
@@ -71,13 +75,36 @@ export default function App() {
     }
   }, [tab.id, tab.project, tab.busy]);
 
+  // Re-bind project on refresh (backend may have lost the workspace mapping)
+  const rebindRef = useRef(null);
+  useEffect(() => {
+    if (tab.id && tab.project?.path && rebindRef.current !== tab.id) {
+      rebindRef.current = tab.id;
+      const rebind = async () => {
+        try {
+          await apiPost(`/api/sessions/${tab.id}`, {
+            message: tab.project.path,
+          });
+          const filesData = await apiGet(`/api/sessions/${tab.id}/files`);
+          if (filesData?.tree) {
+            patchTab(tab.id, { tree: filesData.tree });
+          }
+        } catch {
+          // Session might already be bound, ignore errors
+        }
+      };
+      rebind();
+    }
+  }, [tab.id, tab.project?.path]);
+
   // Auto-scroll chat
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [tab.messages, tab.pending]);
 
-  // Refresh files on tab switch
+  // Refresh files on tab switch (skip if re-bind just handled it)
   useEffect(() => {
+    if (rebindRef.current === tab.id) return;
     refreshFiles(tab, patchTab);
   }, [activeTab]);
 
@@ -195,6 +222,13 @@ export default function App() {
         )}
         <div className="header-right">
           <button
+            onClick={() => setTerminalOpen(!terminalOpen)}
+            className="btn icon-btn"
+            title="Toggle terminal"
+          >
+            ⌘
+          </button>
+          <button
             onClick={() => newTab()}
             className="btn icon-btn"
             title="New session"
@@ -233,6 +267,14 @@ export default function App() {
             file={tab.selected ? { name: tab.selected, content: tab.fileContent } : null}
             readOnly
           />
+          {terminalOpen && tab.project && (
+            <>
+              <Divider direction="vertical" onResize={startResize} panelId="terminal" />
+              <div className="terminal-pane">
+                <TerminalPanel sessionId={tab.id} />
+              </div>
+            </>
+          )}
         </section>
 
         <Divider direction="horizontal" onResize={startResize} panelId="chat" />
@@ -248,22 +290,7 @@ export default function App() {
                 </div>
               )}
               {tab.messages.map((msg, i) => (
-                <div
-                  key={i}
-                  className={`msg ${msg.role}${msg.streaming ? " streaming" : ""}`}
-                >
-                  {msg.bullets?.length > 0 && (
-                    <ul className="action-bullets">
-                      {msg.bullets.map((bullet, bulletIndex) => (
-                        <li key={`${bullet}-${bulletIndex}`}>{bullet}</li>
-                      ))}
-                    </ul>
-                  )}
-                  <pre>
-                    {msg.text}
-                    {msg.streaming && <span className="caret" />}
-                  </pre>
-                </div>
+                <Message key={i} msg={msg} />
               ))}
 
               <ConfirmationDialog

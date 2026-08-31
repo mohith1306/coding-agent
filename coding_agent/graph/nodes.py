@@ -153,6 +153,7 @@ def build_context(state: AgentState, config: Optional[RunnableConfig] = None) ->
 
     # Build formatted context for prompt
     formatted = context_builder.format_for_prompt(context)
+    context_dict["formatted"] = formatted
 
     # Retrieve relevant memory
     relevant_files = []

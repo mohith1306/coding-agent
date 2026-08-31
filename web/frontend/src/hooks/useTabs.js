@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, useEffect } from "react";
 import { loadTabs, saveTabs } from "../utils/storage";
 import { makeTab } from "../utils/events";
 
@@ -51,29 +51,24 @@ export function useTabs() {
     [tabs, safeIndex]
   );
 
-  // Persist to localStorage on every change
-  const persistRef = useRef(tabs);
-  persistRef.current = tabs;
-  useState(() => {
-    // Save on mount
-    saveTabs(persistRef.current);
-  });
-
-  // Save on tab changes
-  const lastSavedRef = useRef(0);
+  // Persist to localStorage on tab changes
   const saveTimeoutRef = useRef(null);
-  if (tabs !== persistRef.current) {
-    const now = Date.now();
-    if (now - lastSavedRef.current > 100) {
-      saveTabs(tabs);
-      lastSavedRef.current = now;
-    } else if (!saveTimeoutRef.current) {
-      saveTimeoutRef.current = setTimeout(() => {
-        saveTabs(persistRef.current);
-        saveTimeoutRef.current = null;
-      }, 200);
+  useEffect(() => {
+    // Clear any pending save
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
     }
-  }
+    // Debounce saves
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTabs(tabs);
+    }, 200);
+    // Cleanup on unmount
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current);
+      }
+    };
+  }, [tabs]);
 
   return {
     tabs,
