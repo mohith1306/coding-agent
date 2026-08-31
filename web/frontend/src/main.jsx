@@ -6,6 +6,7 @@ import "./styles/theme.css";
 import "./styles/layout.css";
 import "./styles/editor.css";
 import "./styles/chat.css";
+import "./styles/composer.css";
 import "./styles/picker.css";
 import "./styles/markdown.css";
 import "./styles/terminal.css";
