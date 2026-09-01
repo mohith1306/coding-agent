@@ -7,61 +7,7 @@ import pytest
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.intent import Intent
 
-
-class FakeMemory:
-    def __init__(self) -> None:
-        self.turns = []
-        self.tasks = []
-        self.preferences = {}
-        self.deleted = []
-
-    def add_turn(self, user_message, agent_response, intent="", target=""):
-        self.turns.append({
-            "id": f"id{len(self.turns)}",
-            "document": f"User: {user_message}\nAgent: {agent_response}",
-            "metadata": {"timestamp": len(self.turns)},
-        })
-
-    def recent_turns(self, limit=5):
-        return []
-
-    def retrieve_similar(self, query, k=5, doc_type=None, max_distance=0.95):
-        return []
-
-    def get_by_type(self, doc_type, limit=20):
-        if doc_type == "task":
-            return self.tasks
-        return []
-
-    def get_all_by_type(self, doc_type):
-        if doc_type == "chat":
-            return self.turns
-        return []
-
-    def delete_by_ids(self, ids):
-        self.deleted.extend(ids)
-        self.turns = [t for t in self.turns if t["id"] not in ids]
-
-    def add_task(self, description, status="pending", files_affected=None):
-        self.tasks.append({
-            "metadata": {
-                "description": description,
-                "status": status,
-                "files_affected": ",".join(files_affected or []),
-            }
-        })
-
-    def add_file_event(self, path, operation, content=""):
-        pass
-
-    def set_preference(self, key, value):
-        self.preferences[key] = value
-
-    def get_preference(self, key):
-        return self.preferences.get(key)
-
-    def list_preferences(self):
-        return [{"key": k, "value": v} for k, v in sorted(self.preferences.items())]
+from tests.fakes import FakeMemory
 
 
 @pytest.fixture

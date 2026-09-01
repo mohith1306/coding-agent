@@ -1,31 +1,6 @@
 from coding_agent.compaction import CompactionManager, estimate_tokens
 
-
-class FakeMemory:
-    def __init__(self) -> None:
-        self.turns = []
-        self.preferences = {}
-        self.deleted = []
-
-    def add_turn(self, user_message, agent_response, intent="", target=""):
-        self.turns.append({
-            "id": f"id{len(self.turns)}",
-            "document": f"User: {user_message}\nAgent: {agent_response}",
-            "metadata": {"timestamp": len(self.turns)},
-        })
-
-    def get_all_by_type(self, doc_type):
-        return self.turns if doc_type == "chat" else []
-
-    def get_preference(self, key):
-        return self.preferences.get(key)
-
-    def set_preference(self, key, value):
-        self.preferences[key] = value
-
-    def delete_by_ids(self, ids):
-        self.deleted.extend(ids)
-        self.turns = [t for t in self.turns if t["id"] not in ids]
+from tests.fakes import FakeMemory
 
 
 def _fill(memory, count):

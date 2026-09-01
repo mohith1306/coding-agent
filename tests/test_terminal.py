@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from coding_agent.tools.terminal import TerminalSandbox
@@ -8,11 +9,18 @@ def test_empty_command(workspace: Path) -> None:
     assert "empty" in sandbox.run("  ")
 
 
-def test_blocked_destructive_commands(workspace: Path) -> None:
+@pytest.mark.parametrize("cmd", [
+    "rm -rf /",
+    "sudo rm file",
+    "mkfs.ext4 /dev/sda",
+    ":(){ :|:& };:",
+    "shutdown now",
+    "git push --force",
+])
+def test_blocked_destructive_command(workspace: Path, cmd: str) -> None:
     sandbox = TerminalSandbox(workspace)
-    for cmd in ["rm -rf /", "sudo rm file", "mkfs.ext4 /dev/sda", ":(){ :|:& };:", "shutdown now", "git push --force"]:
-        result = sandbox.run(cmd)
-        assert "Blocked" in result, cmd
+    result = sandbox.run(cmd)
+    assert "Blocked" in result, f"Expected block for: {cmd}"
 
 
 def test_safe_command_runs(workspace: Path) -> None:

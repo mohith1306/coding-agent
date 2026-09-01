@@ -8,43 +8,7 @@ from coding_agent.agent import CodingAgent
 from coding_agent.tools.daytona_sandbox import DaytonaSandbox
 from coding_agent.tools.terminal import TerminalSandbox
 
-
-class FakeMemory:
-    def __init__(self) -> None:
-        self.turns = []
-
-    def add_turn(self, user_message, agent_response, intent="", target=""):
-        self.turns.append({"id": f"id{len(self.turns)}", "document": "x", "metadata": {"timestamp": len(self.turns)}})
-
-    def recent_turns(self, limit=5):
-        return []
-
-    def retrieve_similar(self, query, k=5, doc_type=None, max_distance=0.95):
-        return []
-
-    def get_by_type(self, doc_type, limit=20):
-        return []
-
-    def get_all_by_type(self, doc_type):
-        return []
-
-    def delete_by_ids(self, ids):
-        pass
-
-    def add_task(self, description, status="pending", files_affected=None):
-        pass
-
-    def add_file_event(self, path, operation, content=""):
-        pass
-
-    def set_preference(self, key, value):
-        pass
-
-    def get_preference(self, key):
-        return None
-
-    def list_preferences(self):
-        return []
+from tests.fakes import FakeMemory
 
 
 def test_daytona_requires_key(tmp_path: Path, monkeypatch) -> None:
