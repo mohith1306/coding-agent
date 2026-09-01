@@ -2,12 +2,11 @@ import React, { useRef, useEffect, useState } from "react";
 
 const MODELS = [
   { value: "openrouter/auto", label: "Auto" },
-  { value: "openrouter/deepseek-coder-v2", label: "DeepSeek Coder V2" },
-  { value: "openrouter/codellama-34b", label: "CodeLlama 34B" },
-  { value: "openrouter/mistral-7b", label: "Mistral 7B" },
-  { value: "openai/gpt-4o", label: "GPT-4o" },
-  { value: "gemini/gemini-1.5-flash", label: "Gemini 1.5 Flash" },
-  { value: "groq/llama-3.3-70b-versatile", label: "Llama 3.3 70B" },
+  { value: "google/gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { value: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { value: "deepseek/deepseek-chat", label: "DeepSeek V3" },
+  { value: "meta-llama/llama-4-maverick", label: "Llama 4 Maverick" },
+  { value: "qwen/qwen3-235b-a22b", label: "Qwen3 235B" },
 ];
 
 export default function ChatComposer({ input, model, busy, hasProject, onInputChange, onSubmit, onModelChange }) {
