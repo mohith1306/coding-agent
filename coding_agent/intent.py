@@ -25,11 +25,11 @@ class Intent:
 class IntentParser:
     """Parses coding-agent requests with an LLM via OpenRouter only."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str = "") -> None:
         dotenv_path = self._find_dotenv_path()
         self._load_dotenv(dotenv_path)
         self.api_key = os.getenv("OPENROUTER_API_KEY", "")
-        self.model = os.getenv("CODING_AGENT_OPENROUTER_MODEL", "openrouter/auto")
+        self.model = model or os.getenv("CODING_AGENT_OPENROUTER_MODEL", "openrouter/auto")
         self.max_tokens = int(os.getenv("CODING_AGENT_MAX_TOKENS", "2048"))
         self.prompt_path = Path(__file__).parent / "prompts" / "intent_system_prompt.md"
         self._log_configuration(dotenv_path)

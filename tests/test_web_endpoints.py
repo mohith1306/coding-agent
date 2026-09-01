@@ -206,7 +206,7 @@ def test_run_while_running_is_conflict(client, sid):
 def test_chat_stream_emits_events(client, sid):
     fake = mock.Mock()
 
-    def fake_handle(message, confirmed=False):
+    def fake_handle(message, confirmed=False, model=""):
         from coding_agent.events import emit
 
         emit({

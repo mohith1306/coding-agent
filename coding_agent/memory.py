@@ -381,3 +381,97 @@ class MemoryStore:
             logger.warning("Failed to delete by ids: %s", error)
         finally:
             return_connection(conn)
+
+
+class InMemoryMemoryStore:
+    """Fallback in-memory store when PostgreSQL is unavailable.
+
+    Same public API as MemoryStore — data lives only for the process lifetime.
+    """
+
+    def __init__(self) -> None:
+        self._rows: list[dict] = []
+        self._prefs: dict[str, str] = {}
+        self._ts = 0.0
+        self._next_id = 0
+
+    def _alloc_id(self) -> str:
+        self._next_id += 1
+        return f"mem_{self._next_id}"
+
+    def _next_timestamp(self) -> float:
+        self._ts += 1
+        return self._ts
+
+    def add_turn(self, user_message: str, agent_response: str, intent: str = "", target: str = "") -> None:
+        doc_text = f"User: {user_message}\nAgent: {agent_response}"
+        self._rows.append({
+            "id": self._alloc_id(),
+            "doc_type": "chat",
+            "document": doc_text[:2000],
+            "metadata": {
+                "doc_type": "chat",
+                "content": user_message[:1000], "agent_response": agent_response[:2000],
+                "intent": intent, "target": target, "timestamp": self._next_timestamp(),
+            },
+        })
+
+    def recent_turns(self, limit: int = 5) -> list[dict[str, str]]:
+        chats = [r for r in self._rows if r["doc_type"] == "chat"]
+        chats.sort(key=lambda r: r["metadata"]["timestamp"], reverse=True)
+        return [
+            {"user": r["metadata"]["content"], "agent": r["metadata"]["agent_response"],
+             "intent": r["metadata"].get("intent", ""), "target": r["metadata"].get("target", "")}
+            for r in chats[:limit]
+        ]
+
+    def add_file_event(self, path: str, operation: str, content: str = "") -> None:
+        doc_text = f"[{operation}] {path}: {content[:500]}"
+        self._rows.append({
+            "id": self._alloc_id(),
+            "doc_type": "file",
+            "document": doc_text[:2000],
+            "metadata": {
+                "doc_type": "file",
+                "path": path, "operation": operation, "content_preview": content[:500],
+                "timestamp": self._next_timestamp(),
+            },
+        })
+
+    def add_task(self, description: str, status: str = "pending", files_affected=None) -> None:
+        doc_text = f"[Task: {description}] ({status})"
+        self._rows.append({
+            "id": self._alloc_id(),
+            "doc_type": "task",
+            "document": doc_text,
+            "metadata": {
+                "doc_type": "task",
+                "description": description[:500], "status": status,
+                "files_affected": ",".join(files_affected or []),
+                "timestamp": self._next_timestamp(),
+            },
+        })
+
+    def set_preference(self, key: str, value: str) -> None:
+        self._prefs[key] = value
+
+    def get_preference(self, key: str):
+        return self._prefs.get(key)
+
+    def list_preferences(self, limit: int = 50) -> list[dict[str, str]]:
+        return [{"key": k, "value": v} for k, v in sorted(self._prefs.items())][:limit]
+
+    def retrieve_similar(self, query: str, k: int = 5, doc_type=None, max_distance: float = 0.95) -> list[dict]:
+        return []
+
+    def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
+        rows = [r for r in self._rows if r["doc_type"] == doc_type]
+        rows.sort(key=lambda r: r["metadata"].get("timestamp", 0), reverse=True)
+        return [{"id": r["id"], "document": r["document"], "metadata": r["metadata"]} for r in rows[offset:offset + limit]]
+
+    def get_all_by_type(self, doc_type: str) -> list[dict]:
+        return self.get_by_type(doc_type, limit=999999)
+
+    def delete_by_ids(self, ids: list[str]) -> None:
+        id_set = set(ids)
+        self._rows = [r for r in self._rows if r["id"] not in id_set]

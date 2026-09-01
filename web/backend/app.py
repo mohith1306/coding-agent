@@ -3,6 +3,10 @@ import io
 import json
 import logging
 import os
+import warnings
+
+warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
+
 import queue
 import signal
 import subprocess
@@ -30,7 +34,7 @@ if str(ROOT) not in sys.path:
 
 from coding_agent.agent import CONFIRMATION_MARKER, CodingAgent
 from coding_agent.events import reset_event_sink, set_event_sink
-from coding_agent.memory import MemoryStore
+from coding_agent.memory import MemoryStore, InMemoryMemoryStore
 
 # LangGraph runtime (optional)
 _agent_graph_cls = None
@@ -491,11 +495,11 @@ def delete_session(session_id: str):
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> ChatResponse:
-    agent, session_id = _get_agent(request.session_id)
+    agent, session_id = _get_agent(request.session_id, model=request.model)
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat [%s] session=%s: %.200s", flag, session_id, request.message)
     try:
-        response_text = agent.handle(request.message, confirmed=request.confirmed)
+        response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
     except Exception as error:
         logger.exception("Agent failed for session %s", session_id)
         raise HTTPException(status_code=500, detail=str(error))
@@ -521,7 +525,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    agent, session_id = _get_agent(request.session_id)
+    agent, session_id = _get_agent(request.session_id, model=request.model)
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat stream [%s] session=%s: %.200s", flag, session_id, request.message)
 
@@ -535,7 +539,7 @@ async def chat_stream(request: ChatRequest):
     def worker() -> None:
         token = set_event_sink(events.put)
         try:
-            response_text = agent.handle(request.message, confirmed=request.confirmed)
+            response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
             if response_text.startswith(CONFIRMATION_MARKER):
                 action, target = _parse_confirmation(response_text)
                 events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
@@ -619,10 +623,10 @@ def _graph_chat_stream(request: ChatRequest, root: Path, session_id: str):
 
 def _legacy_chat_stream(request: ChatRequest, events: queue.Queue, session_id: str):
     """Run the legacy CodingAgent in a streaming fashion."""
-    agent, _ = _get_agent(request.session_id)
+    agent, _ = _get_agent(request.session_id, model=request.model)
     token = set_event_sink(events.put)
     try:
-        response_text = agent.handle(request.message, confirmed=request.confirmed)
+        response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
         if response_text.startswith(CONFIRMATION_MARKER):
             action, target = _parse_confirmation(response_text)
             events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
@@ -664,7 +668,7 @@ def _sse_response(events: queue.Queue) -> StreamingResponse:
     )
 
 
-def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgent, str]:
+def _get_agent(session_id: str, root: Optional[Path] = None, model: str = "") -> tuple[CodingAgent, str]:
     if not session_id:
         session_id = str(uuid.uuid4())
 
@@ -679,9 +683,10 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
                     raise HTTPException(status_code=400, detail=f"Not a directory: {workspace}")
             try:
                 memory = MemoryStore()
-            except RuntimeError:
-                memory = None
-            agent = CodingAgent(memory=memory, root=workspace)
+            except Exception:
+                memory = InMemoryMemoryStore()
+                logger.warning("PostgreSQL unavailable, using in-memory fallback")
+            agent = CodingAgent(memory=memory, root=workspace, model=model)
             _sessions[session_id] = (agent, memory)
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
         else:
@@ -690,7 +695,7 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
             # create a new session to avoid cross-folder querying.
             if root is not None and agent.root != root:
                 new_session_id = str(uuid.uuid4())
-                return _get_agent(new_session_id, root=root)
+                return _get_agent(new_session_id, root=root, model=model)
         return _sessions[session_id][0], session_id
 
 
@@ -708,8 +713,12 @@ def _get_or_create_graph(session_id: str, root: Path, model: str = "") -> tuple:
                 return graph, memory, session_id
 
     # Build new graph outside lock
-    memory = MemoryStore()
-    intent_parser = IntentParser()
+    try:
+        memory = MemoryStore()
+    except Exception:
+        memory = InMemoryMemoryStore()
+        logger.warning("PostgreSQL unavailable, using in-memory fallback for graph")
+    intent_parser = IntentParser(model=model)
     context_builder = ContextBuilder(memory, root=root)
     planner = Planner()
     tool_registry = ToolRegistry(root)
