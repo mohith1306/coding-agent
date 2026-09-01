@@ -36,8 +36,14 @@ _MISSING = object()
 
 class CodingAgent:
     def __init__(self, memory: Optional[MemoryStore] = _MISSING, root: Optional[Path] = None, model: str = "") -> None:
+        from .memory import InMemoryMemoryStore
         self.root = (root or Path.cwd()).resolve()
-        self.memory = MemoryStore() if memory is _MISSING else memory
+        if memory is _MISSING:
+            self.memory = MemoryStore()
+        elif memory is None:
+            self.memory = InMemoryMemoryStore()
+        else:
+            self.memory = memory
         self.context_builder = ContextBuilder(self.memory, root=self.root)
         self.file_tools = FileTools(self.root)
         self.intent_parser = IntentParser(model=model)
@@ -55,14 +61,21 @@ class CodingAgent:
         self._pending_intents: dict[str, Intent] = {}
         self._pending_project_targets: dict[str, list[str]] = {}
 
-    def handle(self, user_message: str, confirmed: bool = False) -> str:
+    def handle(self, user_message: str, confirmed: bool = False, model: str = "") -> str:
         emit({"type": "phase", "message": "Parsing your request…"})
         history: list[dict[str, str]] = []
         try:
             history = self.memory.recent_turns(limit=6)
         except Exception as error:
             logger.warning("Failed to load chat history for intent parsing: %s", error)
-        intent = self.intent_parser.parse(user_message, history=history)
+        saved_model = self.intent_parser.model
+        if model:
+            self.intent_parser.model = model
+        try:
+            intent = self.intent_parser.parse(user_message, history=history)
+        finally:
+            if model:
+                self.intent_parser.model = saved_model
         logger.info(
             "Intent: %s target=%r confidence=%s confirmed=%s",
             intent.name,

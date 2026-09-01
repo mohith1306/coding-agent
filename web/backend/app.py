@@ -499,7 +499,7 @@ def chat(request: ChatRequest) -> ChatResponse:
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat [%s] session=%s: %.200s", flag, session_id, request.message)
     try:
-        response_text = agent.handle(request.message, confirmed=request.confirmed)
+        response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
     except Exception as error:
         logger.exception("Agent failed for session %s", session_id)
         raise HTTPException(status_code=500, detail=str(error))
@@ -539,7 +539,7 @@ async def chat_stream(request: ChatRequest):
     def worker() -> None:
         token = set_event_sink(events.put)
         try:
-            response_text = agent.handle(request.message, confirmed=request.confirmed)
+            response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
             if response_text.startswith(CONFIRMATION_MARKER):
                 action, target = _parse_confirmation(response_text)
                 events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
@@ -626,7 +626,7 @@ def _legacy_chat_stream(request: ChatRequest, events: queue.Queue, session_id: s
     agent, _ = _get_agent(request.session_id, model=request.model)
     token = set_event_sink(events.put)
     try:
-        response_text = agent.handle(request.message, confirmed=request.confirmed)
+        response_text = agent.handle(request.message, confirmed=request.confirmed, model=request.model)
         if response_text.startswith(CONFIRMATION_MARKER):
             action, target = _parse_confirmation(response_text)
             events.put({"type": "confirmation", "action": action, "target": target, "response": response_text})
@@ -683,7 +683,7 @@ def _get_agent(session_id: str, root: Optional[Path] = None, model: str = "") ->
                     raise HTTPException(status_code=400, detail=f"Not a directory: {workspace}")
             try:
                 memory = MemoryStore()
-            except RuntimeError:
+            except Exception:
                 memory = InMemoryMemoryStore()
                 logger.warning("PostgreSQL unavailable, using in-memory fallback")
             agent = CodingAgent(memory=memory, root=workspace, model=model)
@@ -691,10 +691,6 @@ def _get_agent(session_id: str, root: Optional[Path] = None, model: str = "") ->
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
         else:
             agent, _ = _sessions[session_id]
-            # Update model if changed
-            if model and hasattr(agent, 'intent_parser') and agent.intent_parser.model != model:
-                logger.info("Intent model changed from %s to %s", agent.intent_parser.model, model)
-                agent.intent_parser.model = model
             # If a root was explicitly provided and differs from the existing session's workspace,
             # create a new session to avoid cross-folder querying.
             if root is not None and agent.root != root:
@@ -719,10 +715,10 @@ def _get_or_create_graph(session_id: str, root: Path, model: str = "") -> tuple:
     # Build new graph outside lock
     try:
         memory = MemoryStore()
-    except RuntimeError:
+    except Exception:
         memory = InMemoryMemoryStore()
         logger.warning("PostgreSQL unavailable, using in-memory fallback for graph")
-    intent_parser = IntentParser()
+    intent_parser = IntentParser(model=model)
     context_builder = ContextBuilder(memory, root=root)
     planner = Planner()
     tool_registry = ToolRegistry(root)
