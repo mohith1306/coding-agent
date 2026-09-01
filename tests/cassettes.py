@@ -11,7 +11,7 @@ Usage:
 
     # Replay (subsequent runs)
     with Cassette.replay("my_test") as c:
-        result = c.replay(messages)
+        result = c.replay_entry(messages)
         assert result == expected
 """
 
@@ -99,9 +99,10 @@ class Cassette:
         ))
 
     def replay_entry(self, messages: list[dict[str, str]], **kwargs: Any) -> str:
-        """Replay the next recorded response.
+        """Replay the next recorded response, validating the request matches.
 
-        Raises IndexError if no more entries are available.
+        Compares normalized messages and kwargs against the recorded entry.
+        Raises ValueError on mismatch, IndexError if exhausted, RuntimeError on error.
         """
         if self._replay_index >= len(self.entries):
             raise IndexError(
@@ -109,6 +110,17 @@ class Cassette:
                 f"after {self._replay_index} replays."
             )
         entry = self.entries[self._replay_index]
+
+        # Validate request matches recorded entry
+        recorded_str = json.dumps(entry.request_messages, sort_keys=True, ensure_ascii=False)
+        actual_str = json.dumps(messages, sort_keys=True, ensure_ascii=False)
+        if recorded_str != actual_str:
+            raise ValueError(
+                f"Cassette '{self.name}' request mismatch at entry {self._replay_index}:\n"
+                f"  Expected: {recorded_str[:200]}\n"
+                f"  Actual:   {actual_str[:200]}"
+            )
+
         self._replay_index += 1
 
         if entry.error:

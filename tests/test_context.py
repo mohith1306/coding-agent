@@ -3,28 +3,12 @@ from pathlib import Path
 from coding_agent.context import ContextBuilder
 from coding_agent.memory import MemoryStore
 
-
-class FakeMemory:
-    def __init__(self) -> None:
-        self.chat = []
-        self.preferences = {}
-
-    def recent_turns(self, limit=5):
-        return self.chat[:limit]
-
-    def retrieve_similar(self, query, k=5, doc_type=None, max_distance=0.95):
-        return []
-
-    def get_by_type(self, doc_type, limit=20):
-        return []
-
-    def get_preference(self, key):
-        return self.preferences.get(key)
+from tests.fakes import FakeMemory
 
 
 def _make_builder(chat: list[dict]) -> ContextBuilder:
     memory = FakeMemory()
-    memory.chat = chat
+    memory.turns = chat
     return ContextBuilder(memory, root=Path("/tmp"))
 
 

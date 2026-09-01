@@ -48,17 +48,15 @@ class TestToolSelection:
         agent, parser = _make_agent(workspace)
         parser.intents = [
             Intent(name="create_file", confidence=1.0, target="hello.py",
-                   reason="user wants to create a file", raw_message="create hello.py"),
+                   reason="user wants to create a file", raw_message="create hello.py",
+                   args={"content": "print('hello')"}),
         ]
 
-        # Fake the generate call to return valid Python
-        parser.generate = lambda sys, usr: "print('hello')"
+        response = agent.handle("create hello.py", confirmed=True, model="test")
 
-        response = agent.handle("create hello.py", model="test")
-
-        # Agent should have attempted to create the file
-        assert isinstance(response, str)
-        assert len(response) > 0
+        # File should be created with provided content
+        assert (workspace / "hello.py").exists()
+        assert (workspace / "hello.py").read_text() == "print('hello')"
 
     def test_read_file_intent(self, workspace: Path) -> None:
         agent, parser = _make_agent(workspace)

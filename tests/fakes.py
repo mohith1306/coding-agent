@@ -52,7 +52,7 @@ class FakeMemory:
         })
 
     def recent_turns(self, limit: int = 5) -> list[dict[str, str]]:
-        return []
+        return self.turns[-limit:] if self.turns else []
 
     # -- file events --
 
@@ -102,6 +102,10 @@ class FakeMemory:
     def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
         if doc_type == "task":
             return self.tasks[offset:offset + limit]
+        if doc_type == "file":
+            return self.file_events[offset:offset + limit]
+        if doc_type == "chat":
+            return self.turns[offset:offset + limit]
         return []
 
     def get_all_by_type(self, doc_type: str) -> list[dict]:
@@ -245,3 +249,82 @@ class FakeTerminal:
 
     def close(self) -> None:
         pass
+
+
+# ---------------------------------------------------------------------------
+# LangChain-compatible fakes for graph runtime testing
+# ---------------------------------------------------------------------------
+
+class FakeLangChainLLM:
+    """Fake LLM implementing LangChain's invoke/bind_tools interface."""
+
+    def __init__(self, response_text: str = "ok") -> None:
+        self._response_text = response_text
+        self.call_log: list[Any] = []
+
+    def invoke(self, messages: Any, **kwargs: Any) -> Any:
+        self.call_log.append(messages)
+        from langchain_core.messages import AIMessage
+        return AIMessage(content=self._response_text)
+
+    def bind_tools(self, tools: list[Any], **kwargs: Any) -> FakeLangChainLLM:
+        return self
+
+    def with_config(self, **kwargs: Any) -> FakeLangChainLLM:
+        return self
+
+
+class FakeContextBuilder:
+    """Fake ContextBuilder that returns minimal context."""
+
+    def __init__(self) -> None:
+        pass
+
+    def build(self, user_message: str, load_context: bool = True) -> Any:
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            chat_history=[],
+            similar_context=[],
+            last_intent="",
+            last_target="",
+            branch="main",
+            has_dirty_files=False,
+            dirty_files=[],
+            language="python",
+            has_test_config=False,
+            has_lint_config=False,
+            has_typecheck_config=False,
+            session_summary="",
+            project_context="",
+        )
+
+    def format_for_prompt(self, context: Any) -> str:
+        return ""
+
+
+class FakePlanner:
+    """Fake Planner that returns a simple plan."""
+
+    def __init__(self) -> None:
+        pass
+
+    def create_plan(self, raw_message: str, target: str = "") -> Any:
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            steps=[],
+            path_type="read",
+            estimated_tokens=100,
+        )
+
+
+class FakeVerifier:
+    """Fake Verifier that always passes."""
+
+    def __init__(self) -> None:
+        pass
+
+    def verify_file(self, file_path: Any, context: Any = None) -> dict:
+        return {"passed": True, "message": "Verification passed (fake)."}
+
+    def verify_code(self, code: str, file_path: Any = None) -> dict:
+        return {"passed": True, "message": "Verification passed (fake)."}
