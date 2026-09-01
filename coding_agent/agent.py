@@ -35,12 +35,12 @@ _MISSING = object()
 
 
 class CodingAgent:
-    def __init__(self, memory: Optional[MemoryStore] = _MISSING, root: Optional[Path] = None) -> None:
+    def __init__(self, memory: Optional[MemoryStore] = _MISSING, root: Optional[Path] = None, model: str = "") -> None:
         self.root = (root or Path.cwd()).resolve()
         self.memory = MemoryStore() if memory is _MISSING else memory
         self.context_builder = ContextBuilder(self.memory, root=self.root)
         self.file_tools = FileTools(self.root)
-        self.intent_parser = IntentParser()
+        self.intent_parser = IntentParser(model=model)
         self.terminal = self._build_terminal()
         self.verifier = Verifier(root=self.root, terminal=self.terminal)
         self.git = GitContext(root=self.root)

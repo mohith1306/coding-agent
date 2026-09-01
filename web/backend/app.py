@@ -3,6 +3,10 @@ import io
 import json
 import logging
 import os
+import warnings
+
+warnings.filterwarnings("ignore", message=".*NotOpenSSLWarning.*")
+
 import queue
 import signal
 import subprocess
@@ -491,7 +495,7 @@ def delete_session(session_id: str):
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> ChatResponse:
-    agent, session_id = _get_agent(request.session_id)
+    agent, session_id = _get_agent(request.session_id, model=request.model)
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat [%s] session=%s: %.200s", flag, session_id, request.message)
     try:
@@ -521,7 +525,7 @@ def chat(request: ChatRequest) -> ChatResponse:
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
-    agent, session_id = _get_agent(request.session_id)
+    agent, session_id = _get_agent(request.session_id, model=request.model)
     flag = "confirmed" if request.confirmed else "unconfirmed"
     logger.info("Chat stream [%s] session=%s: %.200s", flag, session_id, request.message)
 
@@ -619,7 +623,7 @@ def _graph_chat_stream(request: ChatRequest, root: Path, session_id: str):
 
 def _legacy_chat_stream(request: ChatRequest, events: queue.Queue, session_id: str):
     """Run the legacy CodingAgent in a streaming fashion."""
-    agent, _ = _get_agent(request.session_id)
+    agent, _ = _get_agent(request.session_id, model=request.model)
     token = set_event_sink(events.put)
     try:
         response_text = agent.handle(request.message, confirmed=request.confirmed)
@@ -664,7 +668,7 @@ def _sse_response(events: queue.Queue) -> StreamingResponse:
     )
 
 
-def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgent, str]:
+def _get_agent(session_id: str, root: Optional[Path] = None, model: str = "") -> tuple[CodingAgent, str]:
     if not session_id:
         session_id = str(uuid.uuid4())
 
@@ -682,16 +686,20 @@ def _get_agent(session_id: str, root: Optional[Path] = None) -> tuple[CodingAgen
             except RuntimeError:
                 memory = InMemoryMemoryStore()
                 logger.warning("PostgreSQL unavailable, using in-memory fallback")
-            agent = CodingAgent(memory=memory, root=workspace)
+            agent = CodingAgent(memory=memory, root=workspace, model=model)
             _sessions[session_id] = (agent, memory)
             logger.info("Created new session %s (workspace %s)", session_id, workspace)
         else:
             agent, _ = _sessions[session_id]
+            # Update model if changed
+            if model and hasattr(agent, 'intent_parser') and agent.intent_parser.model != model:
+                logger.info("Intent model changed from %s to %s", agent.intent_parser.model, model)
+                agent.intent_parser.model = model
             # If a root was explicitly provided and differs from the existing session's workspace,
             # create a new session to avoid cross-folder querying.
             if root is not None and agent.root != root:
                 new_session_id = str(uuid.uuid4())
-                return _get_agent(new_session_id, root=root)
+                return _get_agent(new_session_id, root=root, model=model)
         return _sessions[session_id][0], session_id
 
 
