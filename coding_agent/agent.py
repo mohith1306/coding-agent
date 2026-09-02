@@ -12,6 +12,7 @@ from .intent import Intent, IntentParser
 from .memory import MemoryStore
 from .planner import Planner
 from .tools.daytona_sandbox import DaytonaSandbox
+from .tools.docker_sandbox import DockerSandbox
 from .tools.files import FileTools
 from .tools.git import GitContext
 from .tools.github import GitHubIntegration
@@ -140,11 +141,20 @@ class CodingAgent:
         )
 
     def _build_terminal(self):
+        """Build terminal with Docker support."""
+        # Priority: Docker > Daytona > Local
+        if os.getenv("USE_DOCKER_SANDBOX", "true").lower() == "true":
+            try:
+                return DockerSandbox(self.root)
+            except Exception as error:
+                logger.warning("Docker unavailable, trying Daytona: %s", error)
+
         if os.getenv("DAYTONA_API_KEY"):
             try:
                 return DaytonaSandbox(self.root)
             except Exception as error:
-                logger.warning("Failed to initialize Daytona sandbox, falling back to local: %s", error)
+                logger.warning("Daytona unavailable, falling back to local: %s", error)
+
         return TerminalSandbox(self.root)
 
     def _action_bullets(self, intent: Intent) -> list[str]:
@@ -255,6 +265,28 @@ class CodingAgent:
             return self._handle_list_issues(intent)
         if intent.name == "list_prs":
             return self._handle_list_prs(intent)
+        if intent.name == "create_pr":
+            return self._handle_create_pr(intent)
+        if intent.name == "create_issue":
+            return self._handle_create_issue(intent)
+        if intent.name == "add_comment":
+            return self._handle_add_comment(intent)
+        if intent.name == "close_issue":
+            return self._handle_close_issue(intent)
+        if intent.name == "merge_pr":
+            return self._handle_merge_pr(intent)
+        if intent.name == "create_branch":
+            return self._handle_create_branch(intent)
+        if intent.name == "checkout_branch":
+            return self._handle_checkout_branch(intent)
+        if intent.name == "delete_branch":
+            return self._handle_delete_branch(intent)
+        if intent.name == "list_branches":
+            return self._handle_list_branches(intent)
+        if intent.name == "merge_branch":
+            return self._handle_merge_branch(intent)
+        if intent.name == "auto_fix":
+            return self._handle_auto_fix(intent, context)
         if intent.name == "analyze_project":
             return self._handle_analyze_project(intent, context)
         if intent.name == "run_tests":
@@ -675,6 +707,189 @@ class CodingAgent:
         return "\n".join(
             f"#{pr['number']} [{pr['state']}] {pr['title']} ({pr['branch']})"
             for pr in prs
+        )
+
+    def _handle_create_pr(self, intent: Intent) -> str:
+        """Create a pull request on GitHub."""
+        target = intent.target or ""
+        # Parse title, body, head, base from target
+        # Format: "title | body | head | base" or "title | head"
+        parts = [p.strip() for p in target.split("|")]
+        if len(parts) < 2:
+            return "Usage: create PR <title> | <head_branch> | [base_branch] | [body]"
+        
+        title = parts[0]
+        head = parts[1]
+        base = parts[2] if len(parts) > 2 and parts[2] else "main"
+        body = parts[3] if len(parts) > 3 else f"Automated PR created by Coding Agent"
+        
+        result = self.github.create_pull_request(title, body, head, base)
+        if "error" in result:
+            return f"Failed to create PR: {result['error']}"
+        return f"Created PR: {result.get('html_url', result.get('number', 'unknown'))}"
+
+    def _handle_create_issue(self, intent: Intent) -> str:
+        """Create an issue on GitHub."""
+        target = intent.target or ""
+        # Format: "title | body | labels"
+        parts = [p.strip() for p in target.split("|")]
+        if not parts or not parts[0]:
+            return "Usage: create issue <title> | [body] | [labels]"
+        
+        title = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+        labels = [l.strip() for l in parts[2].split(",")] if len(parts) > 2 and parts[2] else None
+        
+        result = self.github.create_issue(title, body, labels=labels)
+        if "error" in result:
+            return f"Failed to create issue: {result['error']}"
+        return f"Created issue: {result.get('html_url', result.get('number', 'unknown'))}"
+
+    def _handle_add_comment(self, intent: Intent) -> str:
+        """Add a comment to an issue or PR."""
+        target = intent.target or ""
+        # Format: "issue_number | body"
+        parts = [p.strip() for p in target.split("|")]
+        if len(parts) < 2:
+            return "Usage: comment on <issue_number> | <message>"
+        
+        try:
+            issue_number = int(parts[0])
+        except ValueError:
+            return "Issue number must be a number."
+        
+        body = parts[1]
+        result = self.github.add_comment(issue_number, body)
+        if "error" in result:
+            return f"Failed to add comment: {result['error']}"
+        return f"Added comment to #{issue_number}"
+
+    def _handle_close_issue(self, intent: Intent) -> str:
+        """Close an issue."""
+        target = intent.target or ""
+        try:
+            issue_number = int(target.strip())
+        except ValueError:
+            return "Usage: close issue <number>"
+        
+        result = self.github.close_issue(issue_number)
+        if "error" in result:
+            return f"Failed to close issue: {result['error']}"
+        return f"Closed issue #{issue_number}"
+
+    def _handle_merge_pr(self, intent: Intent) -> str:
+        """Merge a pull request."""
+        target = intent.target or ""
+        # Format: "pr_number | merge_method"
+        parts = [p.strip() for p in target.split("|")]
+        try:
+            pr_number = int(parts[0])
+        except ValueError:
+            return "Usage: merge PR <number> | [merge_method]"
+        
+        merge_method = parts[1] if len(parts) > 1 else "merge"
+        result = self.github.merge_pull_request(pr_number, merge_method)
+        if "error" in result:
+            return f"Failed to merge PR: {result['error']}"
+        return f"Merged PR #{pr_number}"
+
+    def _handle_create_branch(self, intent: Intent) -> str:
+        """Create a new branch."""
+        branch_name = intent.target or ""
+        if not branch_name:
+            return "Usage: create branch <branch_name>"
+        
+        code, output = self.git.create_branch(branch_name)
+        if code != 0:
+            return f"Failed to create branch: {output}"
+        return f"Created branch: {branch_name}"
+
+    def _handle_checkout_branch(self, intent: Intent) -> str:
+        """Checkout to a branch."""
+        branch_name = intent.target or ""
+        if not branch_name:
+            return "Usage: checkout branch <branch_name>"
+        
+        code, output = self.git.checkout(branch_name)
+        if code != 0:
+            return f"Failed to checkout: {output}"
+        return f"Checked out to branch: {branch_name}"
+
+    def _handle_delete_branch(self, intent: Intent) -> str:
+        """Delete a branch."""
+        branch_name = intent.target or ""
+        if not branch_name:
+            return "Usage: delete branch <branch_name>"
+        
+        code, output = self.git.delete_branch(branch_name)
+        if code != 0:
+            return f"Failed to delete branch: {output}"
+        return f"Deleted branch: {branch_name}"
+
+    def _handle_list_branches(self, intent: Intent) -> str:
+        """List all branches."""
+        branches = self.git.list_branches()
+        if not branches:
+            return "No branches found."
+        current = self.git.current_branch()
+        lines = []
+        for b in branches:
+            prefix = "* " if b == current else "  "
+            lines.append(f"{prefix}{b}")
+        return "Branches:\n" + "\n".join(lines)
+
+    def _handle_merge_branch(self, intent: Intent) -> str:
+        """Merge a branch into current branch."""
+        branch_name = intent.target or ""
+        if not branch_name:
+            return "Usage: merge branch <branch_name>"
+        
+        code, output = self.git.merge(branch_name)
+        if code != 0:
+            return f"Merge failed: {output}"
+        return f"Merged branch: {branch_name}"
+
+    def _handle_auto_fix(self, intent: Intent, context: Optional[AgentContext] = None) -> str:
+        """Auto-fix an issue by creating a branch, fixing, and creating PR."""
+        target = intent.target or ""
+        if not target:
+            return "Usage: auto fix <issue_number> or auto fix <description>"
+        
+        # Parse issue number or description
+        try:
+            issue_number = int(target.strip())
+            # Fetch issue details
+            issues = self.github.list_issues(state="open")
+            issue = None
+            for i in issues:
+                if str(i.get("number")) == str(issue_number):
+                    issue = i
+                    break
+            if not issue:
+                return f"Issue #{issue_number} not found."
+            title = issue.get("title", f"Fix issue #{issue_number}")
+            description = f"Fix for issue #{issue_number}: {title}"
+        except ValueError:
+            # Use as description
+            issue_number = None
+            title = target.strip()
+            description = target.strip()
+        
+        # Create branch
+        import re
+        branch_name = re.sub(r'[^a-z0-9-]', '-', title.lower())[:50]
+        branch_name = f"fix/{branch_name}"
+        
+        code, output = self.git.create_and_checkout(branch_name)
+        if code != 0:
+            return f"Failed to create branch: {output}"
+        
+        # Note: The actual fix will be done by the agent in subsequent turns
+        # This just sets up the branch
+        return (
+            f"Created branch: {branch_name}\n"
+            f"Ready to fix: {description}\n"
+            f"Now tell me what code changes to make, and I'll commit and create a PR."
         )
 
     def _handle_search(self, intent: Intent) -> str:
