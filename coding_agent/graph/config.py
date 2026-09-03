@@ -3,6 +3,7 @@
 import os
 
 MAX_REPAIR_ATTEMPTS = int(os.getenv("CODING_AGENT_MAX_REPAIR_ATTEMPTS", "3"))
+MAX_TOOL_ITERATIONS = int(os.getenv("CODING_AGENT_MAX_TOOL_ITERATIONS", "5"))
 
 READ_ONLY_INTENTS = frozenset({
     "search_files",
@@ -29,6 +30,15 @@ WRITE_INTENTS = frozenset({
     "commit_and_push",
     "plan",
     "remember",
+    "create_pr",
+    "create_issue",
+    "add_comment",
+    "close_issue",
+    "merge_pr",
+    "create_branch",
+    "delete_branch",
+    "merge_branch",
+    "auto_fix",
 })
 
 CONFIRMATION_MARKER = "CONFIRMATION_REQUIRED"

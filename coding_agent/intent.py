@@ -77,12 +77,23 @@ class IntentParser:
                 raw_message=user_message,
             )
 
+        intent_name = str(parsed.get("intent", "unknown"))
+        requires_confirmation = bool(parsed.get("requires_confirmation", False))
+        # Enforce confirmation for all write/github intents regardless of LLM output
+        _WRITE_REQUIRES_CONFIRMATION = {
+            "delete_file", "commit", "push", "commit_and_push",
+            "create_pr", "create_issue", "add_comment", "close_issue",
+            "merge_pr", "create_branch", "delete_branch", "merge_branch", "auto_fix",
+        }
+        if intent_name in _WRITE_REQUIRES_CONFIRMATION:
+            requires_confirmation = True
+
         return Intent(
-            name=str(parsed.get("intent", "unknown")),
+            name=intent_name,
             target=str(parsed.get("target", "")),
             args=parsed.get("args") if isinstance(parsed.get("args"), dict) else {},
             confidence=float(parsed.get("confidence", 0.0)),
-            requires_confirmation=bool(parsed.get("requires_confirmation", False)),
+            requires_confirmation=requires_confirmation,
             reason=str(parsed.get("reason", "")),
             raw_message=user_message,
         )

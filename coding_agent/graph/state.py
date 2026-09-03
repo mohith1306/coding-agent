@@ -35,9 +35,10 @@ class AgentState(TypedDict, total=False):
     path_type: Optional[str]  # "read_only" | "write"
 
     # ── Execution ────────────────────────────────────────────────────
-    tool_calls: Annotated[list[dict[str, Any]], operator.add]
+    tool_calls: list[dict[str, Any]]
     tool_results: Annotated[list[dict[str, Any]], operator.add]
     changed_files: Annotated[list[str], operator.add]
+    tool_iterations: int
 
     # ── Verification ─────────────────────────────────────────────────
     verification_result: Optional[dict[str, Any]]
