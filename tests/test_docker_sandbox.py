@@ -177,5 +177,78 @@ class TestSandboxIntegration:
         assert tool is not None
 
 
+class TestSandboxLifecycle:
+    """Lifecycle tests that need no Docker daemon (mocked subprocess)."""
+
+    def _sandbox_no_init(self):
+        sandbox = DockerSandbox.__new__(DockerSandbox)
+        sandbox._container_id = "abc123"
+        sandbox._last_activity = 0.0
+        return sandbox
+
+    def test_close_delegates_to_cleanup(self):
+        """close() must remove the container (was missing entirely)."""
+        from unittest.mock import patch
+
+        sandbox = self._sandbox_no_init()
+        with patch.object(DockerSandbox, "cleanup") as mock_cleanup:
+            sandbox.close()
+        mock_cleanup.assert_called_once_with()
+
+    def test_terminal_close_is_noop(self):
+        """TerminalSandbox.close() exists so registry.close() never raises."""
+        assert TerminalSandbox(Path(".")).close() is None
+
+    def test_registry_close_calls_terminal_close(self):
+        """Regression: registry.close() must reach terminal.close()."""
+        from unittest.mock import MagicMock
+
+        from coding_agent.tools.registry import ToolRegistry
+
+        registry = ToolRegistry.__new__(ToolRegistry)
+        registry.terminal = MagicMock()
+        registry.close()
+        registry.terminal.close.assert_called_once_with()
+
+    def test_prune_exited_removes_listed(self):
+        """prune_exited removes exited sandbox containers."""
+        from unittest.mock import MagicMock, patch
+
+        ps = MagicMock(stdout="aaa111\nbbb222\n", returncode=0)
+        rm = MagicMock(returncode=0)
+        with patch(
+            "coding_agent.tools.docker_sandbox.subprocess.run",
+            side_effect=[ps, rm],
+        ) as mock_run:
+            removed = DockerSandbox.prune_exited()
+        assert removed == 2
+        assert mock_run.call_count == 2
+        rm_cmd = mock_run.call_args_list[1].args[0]
+        assert rm_cmd[:2] == ["docker", "rm"]
+        assert "aaa111" in rm_cmd and "bbb222" in rm_cmd
+
+    def test_prune_exited_empty_is_noop(self):
+        """No exited containers means no docker rm call."""
+        from unittest.mock import MagicMock, patch
+
+        ps = MagicMock(stdout="\n", returncode=0)
+        with patch(
+            "coding_agent.tools.docker_sandbox.subprocess.run",
+            return_value=ps,
+        ) as mock_run:
+            assert DockerSandbox.prune_exited() == 0
+        mock_run.assert_called_once()
+
+    def test_prune_exited_survives_missing_docker(self):
+        """Missing daemon must not raise (best-effort cleanup)."""
+        from unittest.mock import patch
+
+        with patch(
+            "coding_agent.tools.docker_sandbox.subprocess.run",
+            side_effect=FileNotFoundError("docker"),
+        ):
+            assert DockerSandbox.prune_exited() == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

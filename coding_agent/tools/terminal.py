@@ -28,6 +28,10 @@ class TerminalSandbox:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
+    def close(self) -> None:
+        """No persistent resources (local subprocesses exit on their own)."""
+        return None
+
     def run(self, command: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> str:
         command = command.strip()
         if not command:

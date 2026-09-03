@@ -54,6 +54,7 @@ class DockerSandbox:
         self._container_id: Optional[str] = None
         self._last_activity: float = time.time()
         self._ensure_image()
+        self.prune_exited()
 
     def _ensure_image(self) -> None:
         """Build sandbox image if it doesn't exist.
@@ -208,6 +209,43 @@ class DockerSandbox:
             return f"Command timed out after {timeout}s: {command[:120]}"
         except Exception as error:
             return f"Failed to run command: {error}"
+
+    def close(self) -> None:
+        """Close the sandbox (alias for cleanup).
+
+        Exists so ToolRegistry.close() actually removes the container
+        instead of swallowing an AttributeError on a missing method.
+        """
+        self.cleanup()
+
+    @staticmethod
+    def prune_exited() -> int:
+        """Remove exited containers from previous sessions/crashes.
+
+        Zero-risk: only containers already in 'exited' state with our
+        name prefix are removed. Returns the count removed.
+        """
+        try:
+            result = subprocess.run(
+                ["docker", "ps", "-a", "-q",
+                 "--filter", f"name={CONTAINER_PREFIX}",
+                 "--filter", "status=exited"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except Exception as error:
+            logger.debug("Container prune skipped: %s", error)
+            return 0
+        ids = [i.strip() for i in result.stdout.splitlines() if i.strip()]
+        if not ids:
+            return 0
+        try:
+            subprocess.run(["docker", "rm", *ids],
+                           capture_output=True, timeout=30)
+        except Exception as error:
+            logger.debug("Container prune failed: %s", error)
+            return 0
+        logger.info("Pruned %d exited sandbox containers", len(ids))
+        return len(ids)
 
     def cleanup(self) -> None:
         """Stop and remove the sandbox container."""
