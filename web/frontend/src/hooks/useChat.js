@@ -10,7 +10,7 @@ export function useChat(patchTab, activeIdRef, refreshFiles, handleAgentEvent) {
       patchTab(id, { busy: true, pending: null, status: "Connecting…" });
 
       if (!confirmed) {
-        if ((tab.title || "").startsWith("New session") && tab.project) {
+        if ((tab.title || "").startsWith("New session")) {
           patchTab(id, { title: text.slice(0, 24) || "New session" });
         }
       }
