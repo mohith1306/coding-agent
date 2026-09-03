@@ -11,7 +11,9 @@ The goal is to evolve the current Python + FastAPI + React coding agent into a s
 - LangSmith — tracing, debugging, observability and evaluation
 - Existing Context Builder — repository-aware context construction
 - Tree-sitter — code structure / AST analysis
-- ChromaDB — semantic memory and retrieval
+- PostgreSQL + pgvector — semantic memory and retrieval (replaces ChromaDB);
+  project facts in `project_contexts`, embeddings via OpenRouter, keyword
+  fallback when vectors are unavailable (see §13)
 - Daytona + local sandbox — isolated code execution
 - Git / GitHub integrations — repository operations
 - FastAPI — backend API and streaming
@@ -52,8 +54,8 @@ The platform should be divided into five major layers:
    Context Engine      Tool Harness      LLM Layer
           │                │                │
           ▼                ▼                ▼
- Tree-sitter/ripgrep   Sandbox/Git      OpenRouter
- ChromaDB              GitHub           BYOK
+  Tree-sitter/ripgrep   Sandbox/Git      OpenRouter
+  Postgres/pgvector     GitHub           BYOK
 ```
 
 LangSmith observes the LangGraph runtime and records traces across nodes, model calls, tools, errors and execution latency.
@@ -1294,8 +1296,8 @@ Tree-sitter
 ripgrep
     = exact search
 
-ChromaDB
-    = semantic memory/retrieval
+PostgreSQL + pgvector
+    = semantic memory/retrieval + project facts
 
 Tool Harness
     = safe standardized tool execution
@@ -1311,3 +1313,35 @@ React + Monaco
 ```
 
 This is the architecture to implement against for the MVP. Do not introduce another orchestration framework on top of LangGraph; LangGraph should be the central execution engine.
+
+---
+
+# 35. Context Subsystem (as built, Phases 0–3)
+
+Single build per user turn (`ContextBuilder.build`), no mid-loop refresh:
+
+```text
+build()
+ ├─ chat history (last 5 turns) + compaction summary
+ ├─ retrieve_similar → pgvector cosine → keyword fallback (shared ranker)
+ ├─ git branch + dirty files, project identity (instance-cached)
+ ├─ project facts (Postgres project_contexts, all intents)
+ └─ file bodies: intent target first + semantic + recent files
+        (root-jailed, binary/oversize skipped, canonical dedup)
+
+format_for_prompt() → budget assembler (CODING_AGENT_CONTEXT_TOKENS, 12k default)
+ priority: identity > target > files > project > related > history > summary
+ per-section caps; per-file pre-budgeting; fence-aware truncation;
+ output never exceeds the total.
+```
+
+Supporting modules: `tokens.py` (shared estimator), `project_scan.py`
+(single detection impl), `embeddings.py` (OpenRouter, default
+`nvidia/nemotron-3-embed-1b:free` sliced + L2-renormalized to 1024 dims
+for HNSW), `keyword_search.py`, `context_budget.py`, `file_context.py`,
+`project_store.py` (learnings recorded on all intents, both legacy and
+graph runtimes; `SELECT ... FOR UPDATE` appends). Migrations
+`002_pgvector.sql` (guarded extension setup) and
+`003_project_contexts.sql`. All paths degrade offline: missing DB,
+missing extension, or embedding outage yields keyword search and
+omitted sections — never a crash.
