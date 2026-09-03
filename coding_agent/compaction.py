@@ -3,6 +3,7 @@ import os
 from typing import Callable, Optional
 
 from .memory import MemoryStore
+from .tokens import estimate_tokens
 
 
 logger = logging.getLogger(__name__)
@@ -16,13 +17,6 @@ COMPACTION_SYSTEM_PROMPT = (
     "on, files created or modified, key decisions and preferences, and any unresolved next "
     "steps. Return ONLY the summary text, no markdown fences, no preamble."
 )
-
-
-def estimate_tokens(text: str) -> int:
-    """Heuristic token estimate (~4 chars per token)."""
-    if not text:
-        return 0
-    return max(1, len(text) // 4)
 
 
 class CompactionManager:

@@ -6,21 +6,14 @@ from typing import Optional
 
 from .memory import MemoryStore
 from .project_context import ProjectContext
+from .project_scan import ProjectIdentity, detect_identity, get_tracked_files
 
 
 logger = logging.getLogger(__name__)
 
 
-PROJECT_IDENTITY_CACHE: Optional["ProjectIdentity"] = None
+PROJECT_IDENTITY_CACHE: Optional[ProjectIdentity] = None
 TRACKED_FILES_CACHE: Optional[list[str]] = None
-
-
-@dataclass(frozen=True)
-class ProjectIdentity:
-    language: str
-    has_test_config: bool
-    has_lint_config: bool
-    has_typecheck_config: bool
 
 
 @dataclass(frozen=True)
@@ -211,22 +204,7 @@ class ContextBuilder:
             return PROJECT_IDENTITY_CACHE
 
         tracked = self._get_tracked_files()
-        root_files = set()
-        for f in tracked:
-            if "/" not in f:
-                root_files.add(f)
-
-        language = self._detect_language(root_files)
-        has_test = self._detect_test_config(root_files, tracked)
-        has_lint = self._detect_lint_config(root_files)
-        has_typecheck = self._detect_typecheck_config(root_files)
-
-        identity = ProjectIdentity(
-            language=language,
-            has_test_config=has_test,
-            has_lint_config=has_lint,
-            has_typecheck_config=has_typecheck,
-        )
+        identity = detect_identity(self.root, tracked)
         PROJECT_IDENTITY_CACHE = identity
         return identity
 
@@ -236,50 +214,6 @@ class ContextBuilder:
         if TRACKED_FILES_CACHE is not None:
             return TRACKED_FILES_CACHE
 
-        try:
-            result = subprocess.run(
-                ["git", "ls-files"],
-                capture_output=True, text=True, timeout=10,
-            ).stdout.strip()
-        except Exception:
-            TRACKED_FILES_CACHE = []
-            return []
-
-        tracked = [f for f in result.split("\n") if f]
+        tracked = get_tracked_files(self.root)
         TRACKED_FILES_CACHE = tracked
         return tracked
-
-    def _detect_language(self, root_files: set[str]) -> str:
-        if "package.json" in root_files:
-            return "javascript"
-        if "requirements.txt" in root_files or "setup.py" in root_files or "pyproject.toml" in root_files:
-            return "python"
-        if "Cargo.toml" in root_files:
-            return "rust"
-        if "go.mod" in root_files:
-            return "go"
-        if "Gemfile" in root_files:
-            return "ruby"
-        if "CMakeLists.txt" in root_files:
-            return "cpp"
-        return "unknown"
-
-    def _detect_test_config(self, root_files: set[str], tracked: list[str]) -> bool:
-        if "pytest.ini" in root_files or "setup.cfg" in root_files:
-            return True
-        if any("jest.config" in f for f in root_files):
-            return True
-        if any("spec." in f or "_test." in f or ".test." in f or "_test.go" in f for f in tracked[:200]):
-            return True
-        return False
-
-    def _detect_lint_config(self, root_files: set[str]) -> bool:
-        lint_configs = {".eslintrc", ".eslintrc.json", ".eslintrc.js", ".eslintrc.yaml",
-                        ".ruff", ".ruff.toml", ".flake8", ".pylintrc",
-                        ".prettierrc", ".prettierrc.json", ".prettierrc.js"}
-        return bool(root_files & lint_configs)
-
-    def _detect_typecheck_config(self, root_files: set[str]) -> bool:
-        typecheck_configs = {"tsconfig.json", "mypy.ini", "pyrightconfig.json",
-                             ".mypy.ini", "tsconfig.app.json"}
-        return bool(root_files & typecheck_configs)
