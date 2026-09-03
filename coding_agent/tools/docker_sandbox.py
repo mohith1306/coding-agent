@@ -56,55 +56,58 @@ class DockerSandbox:
         self._ensure_image()
 
     def _ensure_image(self) -> None:
-        """Build sandbox image if it doesn't exist."""
-        try:
-            result = subprocess.run(
-                ["docker", "image", "inspect", self.image],
-                capture_output=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
-                self._build_image()
-        except Exception as e:
-            logger.warning("Failed to check image: %s", e)
+        """Build sandbox image if it doesn't exist.
+
+        Raises on failure so callers can fall back to Daytona/local.
+        """
+        result = subprocess.run(
+            ["docker", "image", "inspect", self.image],
+            capture_output=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            self._build_image()
 
     def _build_image(self) -> None:
-        """Build the sandbox Docker image."""
+        """Build the sandbox Docker image.
+
+        Raises RuntimeError on failure so terminal factory can fallback.
+        """
         dockerfile = Path(__file__).parent / "sandbox.Dockerfile"
         if not dockerfile.exists():
-            logger.error("Dockerfile not found: %s", dockerfile)
-            return
+            raise RuntimeError(f"Dockerfile not found: {dockerfile}")
 
         logger.info("Building sandbox image: %s", self.image)
-        try:
-            result = subprocess.run(
-                ["docker", "build", "-t", self.image, "-f", str(dockerfile), "."],
-                capture_output=True,
-                text=True,
-                timeout=120,
-                cwd=str(dockerfile.parent.parent.parent),
-            )
-            if result.returncode != 0:
-                logger.error("Failed to build image: %s", result.stderr[:500])
-        except Exception as e:
-            logger.error("Failed to build image: %s", e)
+        result = subprocess.run(
+            ["docker", "build", "-t", self.image, "-f", str(dockerfile), "."],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(dockerfile.parent.parent.parent),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to build image: {result.stderr[:500]}")
 
     def _get_or_create_container(self) -> str:
-        """Get existing container or create new one."""
+        """Get existing container or create new one (handles idle timeout)."""
         if self._container_id:
-            # Check if container is still running
-            try:
-                result = subprocess.run(
-                    ["docker", "inspect", "-f", "{{.State.Running}}", self._container_id],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-                if result.stdout.strip() == "true":
-                    self._last_activity = time.time()
-                    return self._container_id
-            except Exception:
-                pass
+            if self._check_idle_timeout():
+                logger.info("Container idle timeout exceeded, cleaning up: %s", self._container_id[:12])
+                self.cleanup()
+            else:
+                # Check if container is still running
+                try:
+                    result = subprocess.run(
+                        ["docker", "inspect", "-f", "{{.State.Running}}", self._container_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                    if result.stdout.strip() == "true":
+                        self._last_activity = time.time()
+                        return self._container_id
+                except Exception:
+                    pass
 
         # Create new container
         return self._create_container()
@@ -197,6 +200,11 @@ class DockerSandbox:
 
         except subprocess.TimeoutExpired:
             logger.warning("Command timed out after %ss: %s", timeout, command[:120])
+            # Recreate container so timed-out process doesn't linger
+            try:
+                self.cleanup()
+            except Exception:
+                pass
             return f"Command timed out after {timeout}s: {command[:120]}"
         except Exception as error:
             return f"Failed to run command: {error}"

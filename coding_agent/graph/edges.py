@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from .config import MAX_REPAIR_ATTEMPTS
+from .config import MAX_REPAIR_ATTEMPTS, MAX_TOOL_ITERATIONS
 from .state import AgentState
 
 
@@ -44,11 +44,21 @@ def route_after_tools(state: AgentState) -> str:
     """Route after tool execution.
 
     - If changed_files exist → go to verify
+    - If inspection-only results exist and under iteration limit → go back to agent
     - Otherwise → go to finish
     """
     changed_files = state.get("changed_files", [])
     if changed_files:
         return "verify"
+
+    # Inspection-only batch: route back to agent so it can consume results and issue edits
+    tool_results = state.get("tool_results", [])
+    if tool_results:
+        iterations = state.get("tool_iterations", 0)
+        # Only loop if last batch was successful inspection (not all errors) and under limit
+        has_success = any("result" in r for r in tool_results[-5:])
+        if has_success and iterations < MAX_TOOL_ITERATIONS:
+            return "agent"
     return "finish"
 
 

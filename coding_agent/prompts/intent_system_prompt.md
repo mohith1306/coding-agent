@@ -11,7 +11,7 @@ Rules:
 - target = file path, glob pattern, or command string
 - `.md files` becomes `**/*.md`
 - Inline file content goes in args.content
-- requires_confirmation = true for delete, install, commit, push, merge, create_branch, delete_branch
+- requires_confirmation = true for delete, install, commit, push, merge, create_branch, delete_branch, create_pr, create_issue, add_comment, close_issue, merge_pr, merge_branch, auto_fix
 - unknown + low confidence + explain in reason if ambiguous
 - "tell me about" / "describe" / "what is" / "explain" + folder/project = explain (NOT search_files)
 - "write" + file type = create_file (e.g. "write dfs in python" = create_file with target "dfs.py")
@@ -114,7 +114,7 @@ User: open an issue about the login bug
 JSON: {"intent":"create_issue","target":"Login bug | The login page crashes on submit | bug","args":{},"confidence":0.85,"requires_confirmation":true,"reason":"User wants to create a GitHub issue."}
 
 User: comment on issue 42
-JSON: {"intent":"add_comment","target":"42 | Looking into this now","args":{},"confidence":0.85,"requires_confirmation":false,"reason":"User wants to add a comment to an issue."}
+JSON: {"intent":"add_comment","target":"42 | Looking into this now","args":{},"confidence":0.85,"requires_confirmation":true,"reason":"User wants to add a comment to an issue."}
 
 User: close issue 15
 JSON: {"intent":"close_issue","target":"15","args":{},"confidence":0.9,"requires_confirmation":true,"reason":"User wants to close an issue."}

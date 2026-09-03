@@ -86,15 +86,16 @@ class TestMultiTurn:
     def test_delete_and_explain(self, workspace: Path) -> None:
         agent, parser = _make_agent(workspace)
 
-        # Turn 1: delete a file
+        # Turn 1: delete a file (requires confirmation)
         parser.intents = [
             Intent(name="delete_file", confidence=1.0, target="x.txt",
+                   requires_confirmation=True,
                    reason="delete", raw_message="delete x.txt"),
         ]
 
         (workspace / "x.txt").write_text("data")
 
-        r1 = agent.handle("delete x.txt", model="test")
+        r1 = agent.handle("delete x.txt", confirmed=True, model="test")
         assert "Deleted" in r1
         assert not (workspace / "x.txt").exists()
 

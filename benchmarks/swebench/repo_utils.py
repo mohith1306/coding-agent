@@ -23,13 +23,44 @@ def clone_repo(repo_url: str, commit: str, workdir: Path) -> Path:
 def get_full_patch(repo_path: Path) -> str:
     result = subprocess.run(["git", "diff", "HEAD"], cwd=str(repo_path),
                            capture_output=True, text=True, timeout=30)
-    return result.stdout
+    patch = result.stdout
+
+    # Include untracked files (git diff HEAD excludes them)
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=str(repo_path), capture_output=True, text=True, timeout=10,
+    )
+    for rel in [f.strip() for f in untracked.stdout.splitlines() if f.strip()]:
+        fpath = repo_path / rel
+        if not fpath.is_file():
+            continue
+        try:
+            content = fpath.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        # Generate a Git-compatible patch header for the new file
+        lines = content.splitlines()
+        patch += f"\ndiff --git a/{rel} b/{rel}\nnew file mode 100644\n--- /dev/null\n+++ b/{rel}\n"
+        patch += f"@@ -0,0 +1,{len(lines)} @@\n"
+        for line in lines:
+            patch += f"+{line}\n"
+    return patch
 
 
 def get_changed_files(repo_path: Path) -> list[str]:
     result = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=str(repo_path),
                            capture_output=True, text=True, timeout=10)
-    return [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    files = [f.strip() for f in result.stdout.splitlines() if f.strip()]
+    # Also include untracked files
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=str(repo_path), capture_output=True, text=True, timeout=10,
+    )
+    for f in untracked.stdout.splitlines():
+        f = f.strip()
+        if f and f not in files:
+            files.append(f)
+    return files
 
 
 def cleanup_repo(repo_path: Path) -> None:

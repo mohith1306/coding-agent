@@ -101,11 +101,11 @@ class AgentGraph:
             {"tools": "tools", "finish": "finish"},
         )
 
-        # Conditional: tools → verify | finish
+        # Conditional: tools → verify | agent (inspection loop) | finish
         graph.add_conditional_edges(
             "tools",
             route_after_tools,
-            {"verify": "verify", "finish": "finish"},
+            {"verify": "verify", "agent": "agent", "finish": "finish"},
         )
 
         # Conditional: verify → finish | repair
@@ -157,6 +157,7 @@ class AgentGraph:
             "tool_calls": [],
             "tool_results": [],
             "changed_files": [],
+            "tool_iterations": 0,
             "verification_result": None,
             "test_result": None,
             "repair_attempts": 0,
@@ -217,6 +218,7 @@ class AgentGraph:
             "tool_calls": [],
             "tool_results": [],
             "changed_files": [],
+            "tool_iterations": 0,
             "verification_result": None,
             "test_result": None,
             "repair_attempts": 0,

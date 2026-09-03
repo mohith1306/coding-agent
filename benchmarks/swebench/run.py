@@ -13,9 +13,20 @@ from typing import Any
 
 from tqdm import tqdm
 
-from .config import get_available_providers, get_total_rpd
-from .providers import ProviderRotation
-from .runner import run_instance
+try:
+    from .config import get_available_providers, get_total_rpd
+    from .providers import ProviderRotation
+    from .runner import run_instance
+except ImportError:
+    # Support direct execution: python benchmarks/swebench/run.py
+    import sys as _sys
+    from pathlib import Path as _Path
+    _root = _Path(__file__).resolve().parent.parent.parent
+    if str(_root) not in _sys.path:
+        _sys.path.insert(0, str(_root))
+    from benchmarks.swebench.config import get_available_providers, get_total_rpd
+    from benchmarks.swebench.providers import ProviderRotation
+    from benchmarks.swebench.runner import run_instance
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("swebench")
@@ -42,7 +53,7 @@ def main() -> None:
     parser.add_argument("--instance-id", default="")
     parser.add_argument("--output", default="preds.json")
     parser.add_argument("--max-turns", type=int, default=15)
-    parser.add_argument("-v", action="store_true")
+    parser.add_argument("-v", "--verbose", dest="verbose", action="store_true", help="Enable verbose logging")
     args = parser.parse_args()
 
     if args.verbose:

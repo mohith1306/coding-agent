@@ -70,6 +70,12 @@ def verify(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[s
         file_path = file_path.resolve()
 
         if not file_path.is_file():
+            all_passed = False
+            results.append({
+                "file": file_path_str,
+                "passed": False,
+                "message": f"Expected file not found: {file_path_str} (write may have failed)",
+            })
             continue
 
         verification = verifier.verify_file(file_path, agent_context)

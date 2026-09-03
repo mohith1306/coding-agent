@@ -48,6 +48,19 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
     if context:
         ctx_block = f"\n\nProject context:\n{context.get('formatted', '')}"
 
+    # Build tool feedback for inspection loop (agent consuming previous tool results)
+    tool_results = state.get("tool_results", [])
+    tool_feedback = ""
+    if tool_results and state.get("repair_attempts", 0) == 0 and path_type != "read_only":
+        # Format recent tool results for the LLM to consume
+        feedback_parts = []
+        for tr in tool_results[-5:]:
+            name = tr.get("name", "")
+            res = tr.get("result", tr.get("error", ""))[:1500] if isinstance(tr.get("result", tr.get("error", "")), str) else str(tr.get("result", ""))
+            feedback_parts.append(f"Tool {name} result:\n{res}")
+        if feedback_parts:
+            tool_feedback = "\n\nPrevious tool results:\n" + "\n---\n".join(feedback_parts) + "\n\nUse these results to decide your next edit."
+
     # Build messages
     messages = []
 
@@ -63,7 +76,6 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
             repair_prompt = (prompts_dir / "repair_prompt.md").read_text(encoding="utf-8")
             verification = state.get("verification_result", {})
             error_msg = verification.get("message", "") if verification else ""
-            tool_results = state.get("tool_results", [])
             last_result = tool_results[-1].get("result", "") if tool_results else ""
 
             messages.append(SystemMessage(content=repair_prompt + ctx_block))
@@ -75,6 +87,11 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
                     "Fix the issue and try again."
                 )
             ))
+        elif tool_feedback:
+            # Inspection loop: LLM has already inspected files, now decide edits
+            code_gen_prompt = (prompts_dir / "code_generation_prompt.md").read_text(encoding="utf-8")
+            messages.append(SystemMessage(content=code_gen_prompt + ctx_block))
+            messages.append(HumanMessage(content=f"User request: {user_message}\n{tool_feedback}"))
         elif intent_name in {"create_file", "create_files", "create_project", "modify_code"}:
             # Code generation
             code_gen_prompt = (prompts_dir / "code_generation_prompt.md").read_text(encoding="utf-8")
@@ -100,7 +117,7 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
             # General question/plan
             system_prompt = (prompts_dir / "question_prompt.md").read_text(encoding="utf-8")
             messages.append(SystemMessage(content=system_prompt + ctx_block))
-            messages.append(HumanMessage(content=user_message))
+            messages.append(HumanMessage(content=user_message + tool_feedback))
 
     # For write intents, bind tools to the LLM
     if path_type == "write" and tool_registry and intent_name not in {"explain", "unknown"}:
@@ -113,6 +130,7 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
             logger.warning("LLM call failed: %s", error)
             return {
                 "final_response": f"LLM call failed: {error}",
+                "tool_calls": [],
                 "error": str(error),
                 "execution_trace": [{"node": "agent", "error": str(error), "latency_ms": elapsed_ms(start)}],
             }
@@ -139,9 +157,10 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
                 }],
             }
 
-        # No tool calls — direct response
+        # No tool calls — direct response (clear stale tool_calls)
         return {
             "final_response": response.content,
+            "tool_calls": [],
             "streaming_chunks": [response.content] if response.content else [],
             "execution_trace": [{"node": "agent", "latency_ms": elapsed_ms(start)}],
         }
@@ -155,6 +174,7 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
 
         return {
             "final_response": response.content,
+            "tool_calls": [],
             "streaming_chunks": [response.content] if response.content else [],
             "execution_trace": [{"node": "agent", "latency_ms": elapsed_ms(start)}],
         }
@@ -162,6 +182,7 @@ def agent(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[st
         logger.warning("LLM call failed: %s", error)
         return {
             "final_response": f"LLM call failed: {error}",
+            "tool_calls": [],
             "error": str(error),
             "execution_trace": [{"node": "agent", "error": str(error), "latency_ms": elapsed_ms(start)}],
         }

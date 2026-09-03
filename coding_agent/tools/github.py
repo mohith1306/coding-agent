@@ -107,23 +107,49 @@ class GitHubIntegration:
         url = f"https://api.github.com/repos/{self.repo}"
         return self._get_json(url)
 
+    def get_issue(self, issue_number: int) -> dict[str, str]:
+        """Get a single issue by number."""
+        if not self.available():
+            return {"error": "GitHub token is not set or no git remote found."}
+        url = f"https://api.github.com/repos/{self.repo}/issues/{issue_number}"
+        result = self._get_json(url)
+        if isinstance(result, dict) and "error" not in result:
+            return {
+                "number": str(result.get("number", "")),
+                "title": result.get("title", ""),
+                "state": result.get("state", ""),
+                "body": result.get("body", ""),
+                "labels": ", ".join(label.get("name", "") for label in result.get("labels", [])),
+                "created_at": result.get("created_at", ""),
+                "url": result.get("html_url", ""),
+            }
+        return result if isinstance(result, dict) else {"error": str(result)}
+
     def list_branches(self) -> list[dict[str, str]]:
-        """List all branches in the repository."""
+        """List all branches in the repository (follows pagination)."""
         if not self.available():
             return [{"error": "GitHub token is not set or no git remote found."}]
 
-        url = f"https://api.github.com/repos/{self.repo}/branches"
-        branches = self._get_json(url)
-
-        if isinstance(branches, list):
-            return [
-                {
+        all_branches: list[dict[str, str]] = []
+        page = 1
+        per_page = 100
+        while True:
+            query = urllib.parse.urlencode({"per_page": per_page, "page": page})
+            url = f"https://api.github.com/repos/{self.repo}/branches?{query}"
+            branches = self._get_json(url)
+            if not isinstance(branches, list) or not branches:
+                if isinstance(branches, list):
+                    break
+                return branches  # error dict
+            for branch in branches:
+                all_branches.append({
                     "name": branch.get("name", ""),
                     "sha": branch.get("commit", {}).get("sha", ""),
-                }
-                for branch in branches
-            ]
-        return branches
+                })
+            if len(branches) < per_page:
+                break
+            page += 1
+        return all_branches
 
     # ==================== WRITE OPERATIONS ====================
 

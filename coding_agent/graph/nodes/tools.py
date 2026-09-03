@@ -30,6 +30,13 @@ def execute_tools(state: AgentState, config: Optional[RunnableConfig] = None) ->
     if tool_registry is None:
         return {"tool_results": [{"error": "tool_registry not provided"}]}
 
+    # Deduplicate: only execute calls not already seen (repair re-execution fix)
+    existing_ids = {r.get("call_id") for r in state.get("tool_results", []) if r.get("call_id")}
+    if existing_ids:
+        tool_calls = [tc for tc in tool_calls if not tc.get("id") or tc.get("id") not in existing_ids]
+        if not tool_calls:
+            return {"tool_results": []}
+
     tool_results = []
     changed_files = []
 
@@ -51,16 +58,29 @@ def execute_tools(state: AgentState, config: Optional[RunnableConfig] = None) ->
 
         try:
             result = tool.invoke(args)
-            tool_results.append({
-                "call_id": call_id,
-                "name": name,
-                "args": args,
-                "result": result,
-            })
-            # Track file changes
-            if name == "write_file" and "path" in args:
-                changed_files.append(args["path"])
-            logger.info("Tool %s completed", name)
+            # Detect error strings returned as success (write_file returns "Error ..." on failure)
+            is_error_str = isinstance(result, str) and result.strip().lower().startswith(
+                ("error", "failed", "permission denied", "file not found", "blocked")
+            )
+            if is_error_str:
+                tool_results.append({
+                    "call_id": call_id,
+                    "name": name,
+                    "args": args,
+                    "error": result,
+                })
+                logger.warning("Tool %s returned error string: %s", name, result[:200])
+            else:
+                tool_results.append({
+                    "call_id": call_id,
+                    "name": name,
+                    "args": args,
+                    "result": result,
+                })
+                # Track file changes only for successful writes
+                if name == "write_file" and "path" in args:
+                    changed_files.append(args["path"])
+                logger.info("Tool %s completed", name)
         except Exception as error:
             logger.warning("Tool %s failed: %s", name, error)
             tool_results.append({
@@ -70,9 +90,11 @@ def execute_tools(state: AgentState, config: Optional[RunnableConfig] = None) ->
                 "error": str(error),
             })
 
+    iterations = state.get("tool_iterations", 0) + 1
     return {
         "tool_results": tool_results,
         "changed_files": changed_files,
+        "tool_iterations": iterations,
         "execution_trace": [{
             "node": "tools",
             "tools_executed": len(tool_results),

@@ -94,6 +94,17 @@ class CodingAgent:
                 )
                 intent = pending
 
+        # Defense-in-depth: enforce confirmation for writes even if parser was bypassed
+        _ENFORCE_CONFIRMATION = {
+            "delete_file", "commit", "push", "commit_and_push",
+            "create_pr", "create_issue", "add_comment", "close_issue",
+            "merge_pr", "create_branch", "delete_branch", "merge_branch", "auto_fix",
+        }
+        if intent.name in _ENFORCE_CONFIRMATION and not confirmed:
+            logger.info("Intent %s requires confirmation (enforced); asking user", intent.name)
+            self._pending_intents[user_message] = intent
+            return self._confirmation_prompt(intent)
+
         if intent.requires_confirmation and not confirmed:
             logger.info("Intent %s requires confirmation; asking user", intent.name)
             self._pending_intents[user_message] = intent
@@ -858,15 +869,13 @@ class CodingAgent:
         # Parse issue number or description
         try:
             issue_number = int(target.strip())
-            # Fetch issue details
-            issues = self.github.list_issues(state="open")
-            issue = None
-            for i in issues:
-                if str(i.get("number")) == str(issue_number):
-                    issue = i
-                    break
-            if not issue:
+            # Fetch issue directly by number (not scanning first page)
+            issue = self.github.get_issue(issue_number)
+            if "error" in issue or not issue.get("title"):
                 return f"Issue #{issue_number} not found."
+            if issue.get("state") not in ("open", ""):
+                # Still allow fix for closed issues, but warn
+                pass
             title = issue.get("title", f"Fix issue #{issue_number}")
             description = f"Fix for issue #{issue_number}: {title}"
         except ValueError:

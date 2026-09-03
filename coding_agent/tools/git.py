@@ -74,7 +74,7 @@ class GitContext:
         return [line.strip().lstrip("* ") for line in output.split("\n") if line.strip()]
 
     def list_remote_branches(self) -> list[str]:
-        """List all remote branches."""
+        """List all remote branches (preserves slash namespaces)."""
         output = self._run(["git", "branch", "-r", "--list"])
         if not output:
             return []
@@ -82,8 +82,11 @@ class GitContext:
         for line in output.split("\n"):
             line = line.strip()
             if line and not line.startswith("HEAD ->"):
-                # Remove "origin/" prefix
-                branch = line.split("/")[-1] if "/" in line else line
+                # Remove only the leading remote name (e.g. "origin/")
+                if "/" in line:
+                    branch = line.split("/", 1)[1]
+                else:
+                    branch = line
                 branches.append(branch)
         return branches
 
