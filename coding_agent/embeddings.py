@@ -6,8 +6,10 @@ embeddings are best-effort: a rate-limit or outage must never block
 a memory write or a retrieval (callers fall back to keyword search).
 
 Env:
-    CODING_AGENT_EMBED_MODEL  model slug (default: nvidia/nemotron-3-embed-1b:free, dim 2048)
-    CODING_AGENT_EMBED_DIM    expected vector dimension (default: 2048)
+    CODING_AGENT_EMBED_MODEL  model slug (default: nvidia/nemotron-3-embed-1b:free)
+    CODING_AGENT_EMBED_DIM    stored vector dimension (default: 1024, sliced +
+                              L2 re-normalized from the model's native 2048 so
+                              pgvector HNSW (<=2000 dims) can index it)
     CODING_AGENT_EMBEDDINGS   "off" disables all embedding calls (default: on)
 """
 
@@ -21,7 +23,12 @@ from urllib.request import Request, urlopen
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "nvidia/nemotron-3-embed-1b:free"
-DEFAULT_DIM = 2048
+# Nemotron-3-Embed emits 2048 dims natively, but pgvector HNSW indexes
+# support at most 2000 dims for the `vector` type. The model supports
+# slicing the leading dims (1024/512 remain functional after L2
+# re-normalization), so the default fits HNSW. Override via
+# CODING_AGENT_EMBED_DIM only with a model whose native dim fits.
+DEFAULT_DIM = 1024
 MAX_INPUT_CHARS = 8000
 
 
@@ -54,9 +61,28 @@ def to_pgvector(vec: list[float]) -> str:
 class EmbeddingClient:
     """Thin OpenRouter embeddings client (OpenAI-compatible)."""
 
-    def __init__(self, api_key: str = "", model: str = "") -> None:
+    def __init__(self, api_key: str = "", model: str = "", dim: int = 0) -> None:
         self.api_key = api_key or os.getenv("OPENROUTER_API_KEY", "")
         self.model = model or embed_model()
+        self.dim = dim or embed_dim()
+
+    def _fit_dim(self, vec: list[float]) -> Optional[list[float]]:
+        """Fit a raw embedding to the configured dimension.
+
+        Longer vectors are sliced to the leading dims and L2
+        re-normalized (supported by Matryoshka-style models); shorter
+        vectors are rejected so nothing silently misaligns the column.
+        """
+        if len(vec) == self.dim:
+            return vec
+        if len(vec) > self.dim:
+            sliced = vec[:self.dim]
+            norm = sum(x * x for x in sliced) ** 0.5
+            if norm <= 0:
+                return None
+            return [x / norm for x in sliced]
+        logger.warning("Embedding dim %d < expected %d; skipping", len(vec), self.dim)
+        return None
 
     def embed(self, text: str) -> Optional[list[float]]:
         """Embed a single text. Returns None on any failure."""
@@ -97,15 +123,29 @@ class EmbeddingClient:
             return [None] * len(texts)
 
         try:
-            items = sorted(body["data"], key=lambda d: d.get("index", 0))
-            out: list[Optional[list[float]]] = []
-            for item in items:
+            # Place each embedding at its declared index; reject duplicates
+            # and out-of-range indexes so partial responses can never
+            # misassign one text's vector to another.
+            out: list[Optional[list[float]]] = [None] * len(texts)
+            seen: set[int] = set()
+            for item in body["data"]:
+                idx = item.get("index")
+                if not isinstance(idx, int) or idx < 0 or idx >= len(texts):
+                    logger.warning("Ignoring embedding with invalid index: %r", idx)
+                    continue
+                if idx in seen:
+                    logger.warning("Ignoring duplicate embedding index: %d", idx)
+                    continue
+                seen.add(idx)
                 vec = item.get("embedding")
-                out.append([float(x) for x in vec] if isinstance(vec, list) else None)
-            # Pad/truncate defensively to input length
-            while len(out) < len(texts):
-                out.append(None)
-            return out[:len(texts)]
+                if isinstance(vec, list):
+                    try:
+                        out[idx] = self._fit_dim([float(x) for x in vec])
+                    except (TypeError, ValueError):
+                        out[idx] = None
+                else:
+                    out[idx] = None
+            return out
         except Exception as error:
             logger.warning("Embedding response parse failed (%s); falling back", error)
             return [None] * len(texts)

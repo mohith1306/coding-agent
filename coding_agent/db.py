@@ -160,6 +160,24 @@ def vector_available() -> bool:
         return available
 
 
+def _column_dim(cur, dim: int) -> Optional[str]:
+    """Return the existing embedding column type, or None if absent."""
+    cur.execute(
+        """
+        SELECT format_type(a.atttypid, a.atttypmod)
+        FROM pg_attribute a
+        JOIN pg_class c ON c.oid = a.attrelid
+        WHERE c.relname = 'agent_memory' AND a.attname = 'embedding'
+        """
+    )
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+def _dim_matches(existing: Optional[str], dim: int) -> bool:
+    return existing is not None and f"vector({dim})" in existing
+
+
 def ensure_vector_column(dim: int) -> bool:
     """Create the embedding column (+ index) if pgvector exists.
 
@@ -167,69 +185,85 @@ def ensure_vector_column(dim: int) -> bool:
     already exists with a different dimension (model changed), the vector
     path is disabled rather than corrupting data — caller falls back to
     keyword search until a re-migration + backfill is run.
+
+    The whole check-create sequence runs under the vector lock, and a
+    duplicate-column error (lost init race with another process) triggers
+    a re-check instead of disabling vector search. Transient errors are
+    not cached so a later call retries.
     """
     global _vector_available
-    try:
-        conn = get_connection()
+    with _vector_lock:
+        # Only a cached True short-circuits: a cached False may predate
+        # column creation (e.g. an early vector_available() probe), so
+        # setup always re-runs until it succeeds.
+        if _vector_available is True:
+            return True
         try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-                if cur.fetchone() is None:
-                    logger.info("pgvector extension missing; vector search disabled")
-                    with _vector_lock:
-                        _vector_available = False
-                    return False
+            result = _ensure_vector_column_locked(dim)
+        except Exception as error:
+            logger.warning("ensure_vector_column failed: %s", error)
+            return False
+        # Cache only definitive outcomes; transient states stay uncached.
+        if result is not None:
+            _vector_available = result
+            return result
+        return False
+
+
+def _ensure_vector_column_locked(dim: int) -> Optional[bool]:
+    """Setup body; caller must hold _vector_lock. None = transient, retry later."""
+    import psycopg2.errors
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+            if cur.fetchone() is None:
+                logger.info("pgvector extension missing; vector search disabled")
+                return False
+
+            existing = _column_dim(cur, dim)
+            if existing is None:
+                # Lost-race safe: another process may create it concurrently.
+                try:
+                    cur.execute("SAVEPOINT vec_col")
+                    cur.execute(f"ALTER TABLE agent_memory ADD COLUMN embedding vector({dim})")
+                    cur.execute("RELEASE SAVEPOINT vec_col")
+                    logger.info("Added agent_memory.embedding vector(%d)", dim)
+                except psycopg2.errors.DuplicateColumn:
+                    cur.execute("ROLLBACK TO SAVEPOINT vec_col")
+                    logger.info("Embedding column created concurrently; re-checking")
+                    existing = _column_dim(cur, dim)
+
+            if not _dim_matches(existing, dim):
+                logger.warning(
+                    "embedding column is %s, expected vector(%d); "
+                    "vector search disabled until re-migration",
+                    existing, dim,
+                )
+                return False
+
+            # Best-effort approximate index (hnsw needs pgvector >= 0.7).
+            # Savepoint: a failed CREATE INDEX must not poison the txn.
+            try:
+                cur.execute("SAVEPOINT vec_idx")
                 cur.execute(
                     """
-                    SELECT format_type(a.atttypid, a.atttypmod)
-                    FROM pg_attribute a
-                    JOIN pg_class c ON c.oid = a.attrelid
-                    WHERE c.relname = 'agent_memory' AND a.attname = 'embedding'
+                    CREATE INDEX IF NOT EXISTS idx_memory_embedding
+                    ON agent_memory USING hnsw (embedding vector_cosine_ops)
                     """
                 )
-                row = cur.fetchone()
-                if row:
-                    existing = str(row[0])
-                    if f"vector({dim})" not in existing:
-                        logger.warning(
-                            "embedding column is %s, expected vector(%d); "
-                            "vector search disabled until re-migration",
-                            existing, dim,
-                        )
-                        with _vector_lock:
-                            _vector_available = False
-                        return False
-                else:
-                    cur.execute(f"ALTER TABLE agent_memory ADD COLUMN embedding vector({dim})")
-                    logger.info("Added agent_memory.embedding vector(%d)", dim)
-                # Best-effort approximate index (hnsw needs pgvector >= 0.7).
-                # Savepoint: a failed CREATE INDEX must not poison the txn.
-                try:
-                    cur.execute("SAVEPOINT vec_idx")
-                    cur.execute(
-                        """
-                        CREATE INDEX IF NOT EXISTS idx_memory_embedding
-                        ON agent_memory USING hnsw (embedding vector_cosine_ops)
-                        """
-                    )
-                    cur.execute("RELEASE SAVEPOINT vec_idx")
-                except Exception as index_error:
-                    cur.execute("ROLLBACK TO SAVEPOINT vec_idx")
-                    logger.info("Skipping hnsw index (%s); exact scan will be used", index_error)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            return_connection(conn)
-        with _vector_lock:
-            _vector_available = True
+                cur.execute("RELEASE SAVEPOINT vec_idx")
+            except Exception as index_error:
+                cur.execute("ROLLBACK TO SAVEPOINT vec_idx")
+                logger.info("Skipping hnsw index (%s); exact scan will be used", index_error)
+        conn.commit()
         return True
-    except Exception as error:
-        logger.warning("ensure_vector_column failed: %s", error)
-        with _vector_lock:
-            _vector_available = False
-        return False
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        return_connection(conn)
 
 
 def reset_vector_cache() -> None:

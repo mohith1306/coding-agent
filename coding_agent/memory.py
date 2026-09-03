@@ -351,16 +351,19 @@ class MemoryStore:
         """Retrieve similar documents: pgvector cosine search, keyword fallback.
 
         Returns [{id, document, metadata, distance}] with lower distance
-        first. Falls back to keyword ranking when vectors are unavailable.
+        first. Falls back to keyword ranking only when vectors are
+        unavailable — a successful search with no qualifying matches
+        returns [] without fallback. max_distance applies to both paths.
         """
         if self._vector_enabled():
             try:
                 results = self._vector_search(query, k, doc_type, max_distance)
-                if results:
-                    return results
             except Exception as error:
                 logger.warning("Vector search failed, using keyword fallback: %s", error)
-        return self._keyword_search(query, k, doc_type)
+                results = None
+            if results is not None:
+                return results
+        return self._keyword_search(query, k, doc_type, max_distance)
 
     def _vector_search(
         self,
@@ -368,13 +371,17 @@ class MemoryStore:
         k: int,
         doc_type: Optional[str],
         max_distance: float,
-    ) -> list[dict]:
-        """Cosine-distance search over stored embeddings."""
+    ) -> Optional[list[dict]]:
+        """Cosine-distance search over stored embeddings.
+
+        Returns None when the vector path is unavailable (caller falls
+        back); otherwise the matches within max_distance (possibly empty).
+        """
         if not vector_available():
-            return []
+            return None
         query_vec = self._embed(query)
         if not query_vec:
-            return []
+            return None
         conn = get_connection()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -423,8 +430,13 @@ class MemoryStore:
         query: str,
         k: int,
         doc_type: Optional[str],
+        max_distance: float = 0.95,
     ) -> list[dict]:
-        """Keyword-overlap ranking over recent rows (no vectors needed)."""
+        """Keyword-overlap ranking over recent rows (no vectors needed).
+
+        Applies the same max_distance bound as vector search so fallback
+        results honor the caller's constraint.
+        """
         conn = get_connection()
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -456,6 +468,7 @@ class MemoryStore:
         finally:
             return_connection(conn)
         results = rank_documents(query, docs, top_k=k)
+        results = [r for r in results if r["distance"] <= max_distance]
         logger.info("Keyword search: query=%s returned %d", query[:80], len(results))
         return results
 
@@ -621,7 +634,7 @@ class InMemoryMemoryStore:
         ranked = rank_documents(query, docs, top_k=k)
         # rank_documents sorts by score; restore recency tiebreak explicitly
         ranked.sort(key=lambda r: (r["distance"], -r["metadata"].get("timestamp", 0)))
-        return ranked
+        return [r for r in ranked if r["distance"] <= max_distance]
 
     def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
         rows = [r for r in self._rows if r["doc_type"] == doc_type]

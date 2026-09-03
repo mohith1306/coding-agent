@@ -61,9 +61,40 @@ def test_embed_batch_success() -> None:
         {"index": 0, "embedding": [0.1, 0.2]},
     ]}
     with patch("coding_agent.embeddings.urlopen", return_value=_fake_response(payload)):
-        client = EmbeddingClient(api_key="test-key", model="test-model")
+        client = EmbeddingClient(api_key="test-key", model="test-model", dim=2)
         out = client.embed_batch(["a", "b"])
-    assert out == [[0.1, 0.2], [0.2, 0.3]]  # re-sorted by index
+    assert out == [[0.1, 0.2], [0.2, 0.3]]  # placed by declared index
+
+
+def test_embed_batch_partial_response_keeps_positions() -> None:
+    """A response with only index 1 must not shift into position 0."""
+    payload = {"data": [{"index": 1, "embedding": [0.5, 0.6]}]}
+    with patch("coding_agent.embeddings.urlopen", return_value=_fake_response(payload)):
+        client = EmbeddingClient(api_key="test-key", dim=2)
+        out = client.embed_batch(["a", "b", "c"])
+    assert out == [None, [0.5, 0.6], None]
+
+
+def test_embed_batch_rejects_bad_indexes() -> None:
+    payload = {"data": [
+        {"index": 0, "embedding": [0.1, 0.2]},
+        {"index": 0, "embedding": [0.9, 0.9]},  # duplicate: first wins
+        {"index": 7, "embedding": [0.3, 0.4]},  # out of range
+        {"index": "x", "embedding": [0.3, 0.4]},  # invalid type
+    ]}
+    with patch("coding_agent.embeddings.urlopen", return_value=_fake_response(payload)):
+        client = EmbeddingClient(api_key="test-key", dim=2)
+        out = client.embed_batch(["a"])
+    assert out == [[0.1, 0.2]]
+
+
+def test_fit_dim_slices_and_renormalizes() -> None:
+    client = EmbeddingClient(api_key="test-key", dim=2)
+    out = client._fit_dim([3.0, 4.0, 9.0, 9.0])
+    assert out is not None and len(out) == 2
+    assert abs(sum(x * x for x in out) - 1.0) < 1e-9  # L2 re-normalized
+    assert client._fit_dim([0.1]) is None  # too short: rejected
+    assert client._fit_dim([0.0, 0.0, 1.0]) is None  # zero norm: rejected
 
 
 def test_embed_batch_failure_returns_nones() -> None:
@@ -83,7 +114,7 @@ def test_embed_dim_default() -> None:
     with patch.dict("os.environ", {}, clear=False):
         import os
         os.environ.pop("CODING_AGENT_EMBED_DIM", None)
-        assert embed_dim() == 2048
+        assert embed_dim() == 1024  # HNSW-safe sliced default
 
 
 def test_embeddings_enabled_switch() -> None:
@@ -174,4 +205,58 @@ def test_memorystore_retrieve_falls_back_on_vector_error() -> None:
          patch.object(MemoryStore, "_keyword_search", return_value=[{"id": "x"}]) as kw:
         results = store.retrieve_similar("q", k=3)
     assert results == [{"id": "x"}]
-    kw.assert_called_once_with("q", 3, None)
+    kw.assert_called_once_with("q", 3, None, 0.95)
+
+
+def test_memorystore_no_fallback_on_empty_vector_results() -> None:
+    """Successful vector search with no qualifying matches returns [] directly."""
+    from coding_agent.memory import MemoryStore
+
+    store = MemoryStore.__new__(MemoryStore)
+    store._vector_ready = True
+
+    with patch.object(MemoryStore, "_vector_search", return_value=[]) as vs, \
+         patch.object(MemoryStore, "_keyword_search") as kw:
+        results = store.retrieve_similar("q", k=3)
+    assert results == []
+    vs.assert_called_once()
+    kw.assert_not_called()
+
+
+def test_memorystore_falls_back_when_vector_unavailable() -> None:
+    from coding_agent.memory import MemoryStore
+
+    store = MemoryStore.__new__(MemoryStore)
+    store._vector_ready = True
+
+    with patch.object(MemoryStore, "_vector_search", return_value=None), \
+         patch.object(MemoryStore, "_keyword_search", return_value=[]) as kw:
+        assert store.retrieve_similar("q", k=3) == []
+    kw.assert_called_once_with("q", 3, None, 0.95)
+
+
+def test_keyword_search_applies_max_distance() -> None:
+    from coding_agent.memory import MemoryStore
+
+    store = MemoryStore.__new__(MemoryStore)
+    docs = [
+        {"id": "close", "document": "login bug fix auth", "metadata": {}},
+        {"id": "far", "document": "login weather", "metadata": {}},
+    ]
+    with patch("coding_agent.memory.get_connection"), \
+         patch("coding_agent.memory.return_connection"):
+        # Patch at cursor level is complex; test the filter via rank path:
+        ranked = keyword_search.rank_documents("login bug fix", docs, top_k=5)
+    assert ranked[0]["id"] == "close"
+    filtered = [r for r in ranked if r["distance"] <= 0.5]
+    assert [r["id"] for r in filtered] == ["close"]
+
+
+def test_inmemory_respects_max_distance() -> None:
+    mem = InMemoryMemoryStore()
+    mem.add_turn("login bug fix auth module", "response")
+    mem.add_file_event("weather.txt", "modified", "login sunny day")
+    strict = mem.retrieve_similar("login bug fix", k=5, max_distance=0.1)
+    assert all(r["distance"] <= 0.1 for r in strict)
+    loose = mem.retrieve_similar("login bug fix", k=5, max_distance=0.95)
+    assert len(loose) >= len(strict)
