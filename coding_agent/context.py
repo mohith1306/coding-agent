@@ -12,10 +12,6 @@ from .project_scan import ProjectIdentity, detect_identity, get_tracked_files
 logger = logging.getLogger(__name__)
 
 
-PROJECT_IDENTITY_CACHE: Optional[ProjectIdentity] = None
-TRACKED_FILES_CACHE: Optional[list[str]] = None
-
-
 @dataclass(frozen=True)
 class AgentContext:
     chat_history: list[dict[str, str]]
@@ -41,13 +37,16 @@ class ContextBuilder:
         self.memory = memory
         self.root = (root or Path.cwd()).resolve()
         self.project_context = ProjectContext(self.root, memory)
-        self._reset_caches()
+        # Instance-level caches: scan results are root-specific, so sharing
+        # them across builders (module globals) leaks one project's identity
+        # into another when multiple sessions are active.
+        self._identity_cache: Optional[ProjectIdentity] = None
+        self._tracked_files_cache: Optional[list[str]] = None
 
     def _reset_caches(self) -> None:
-        """Reset global caches when workspace changes to avoid stale context."""
-        global PROJECT_IDENTITY_CACHE, TRACKED_FILES_CACHE
-        PROJECT_IDENTITY_CACHE = None
-        TRACKED_FILES_CACHE = None
+        """Reset this builder's caches (e.g. when its workspace changes)."""
+        self._identity_cache = None
+        self._tracked_files_cache = None
 
     def get_or_create_project_context(self) -> str:
         """Get existing project context or create initial context for new project."""
@@ -198,22 +197,18 @@ class ContextBuilder:
         return branch, dirty
 
     def _detect_project_identity(self) -> ProjectIdentity:
-        global PROJECT_IDENTITY_CACHE, TRACKED_FILES_CACHE
-
-        if PROJECT_IDENTITY_CACHE is not None:
-            return PROJECT_IDENTITY_CACHE
+        if self._identity_cache is not None:
+            return self._identity_cache
 
         tracked = self._get_tracked_files()
         identity = detect_identity(self.root, tracked)
-        PROJECT_IDENTITY_CACHE = identity
+        self._identity_cache = identity
         return identity
 
     def _get_tracked_files(self) -> list[str]:
-        global TRACKED_FILES_CACHE
-
-        if TRACKED_FILES_CACHE is not None:
-            return TRACKED_FILES_CACHE
+        if self._tracked_files_cache is not None:
+            return self._tracked_files_cache
 
         tracked = get_tracked_files(self.root)
-        TRACKED_FILES_CACHE = tracked
+        self._tracked_files_cache = tracked
         return tracked

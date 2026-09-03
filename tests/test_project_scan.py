@@ -142,3 +142,26 @@ def test_detect_identity_explicit_tracked() -> None:
     identity = detect_identity(Path("/nonexistent"), tracked=["Cargo.toml", "src/main.rs"])
     assert identity.language == "rust"
     assert identity.has_test_config is False
+
+
+def test_builders_do_not_share_cache_across_projects(tmp_path: Path) -> None:
+    """Regression: one builder's scan must not leak into another project."""
+    from tests.fakes import FakeMemory
+
+    from coding_agent.context import ContextBuilder
+
+    proj_a = tmp_path / "proj_a"
+    proj_b = tmp_path / "proj_b"
+    proj_a.mkdir()
+    proj_b.mkdir()
+    _init_repo(proj_a, {"requirements.txt": "x\n"})
+    _init_repo(proj_b, {"package.json": "{}\n"})
+
+    builder_a = ContextBuilder(FakeMemory(), root=proj_a)
+    builder_b = ContextBuilder(FakeMemory(), root=proj_b)
+
+    assert builder_a._detect_project_identity().language == "python"
+    # Builder B must see its own project even though A populated a cache first
+    assert builder_b._detect_project_identity().language == "javascript"
+    # And A still sees its own after B scanned
+    assert builder_a._detect_project_identity().language == "python"
