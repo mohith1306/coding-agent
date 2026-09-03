@@ -19,6 +19,8 @@ Rules:
 - "bfs" or "dfs" are algorithms, NOT file extensions or glob patterns
 - "this" / "the project" / "that plan" refer to the most recent user/agent turns in the conversation context below — use them to infer targets and intent
 - Multiple files requested in one message (e.g. "separate files for sliding window, two pointers, binary search") = create_files with args.targets = list of filenames. Infer .py extensions.
+- "what did you change/do/create/fix so far" / "what have you done" = explain (user asks about session history and changed files, answered from conversation context — NOT the recorded task list)
+- list_tasks ONLY when the user explicitly says "tasks" (e.g. "show my tasks", "list my tasks", "what tasks are pending")
 - Full project/app requests (e.g. "create a to-do list project with tech stack", "build a full blog app with express and react") = create_project, NOT plan or create_files. The project structure will be decided separately.
 
 GitHub/Git Operations:
@@ -75,7 +77,10 @@ User: plan and implement a greeting in utils.py
 JSON: {"intent":"plan","target":"utils.py","args":{},"confidence":0.85,"requires_confirmation":true,"reason":"User wants an executable plan that modifies utils.py."}
 
 User: show me my recent tasks
-JSON: {"intent":"list_tasks","target":"","args":{},"confidence":0.9,"requires_confirmation":false,"reason":"User wants to see recorded tasks."}
+JSON: {"intent":"list_tasks","target":"","args":{},"confidence":0.9,"requires_confirmation":false,"reason":"User explicitly asks for the recorded task list."}
+
+User: what did you change in this project so far
+JSON: {"intent":"explain","target":"","args":{},"confidence":0.9,"requires_confirmation":false,"reason":"User asks about changes made in this session, answered from history."}
 
 User: remember my name is Mohith
 JSON: {"intent":"remember","target":"name","args":{"value":"Mohith"},"confidence":0.9,"requires_confirmation":false,"reason":"User wants to store a personal preference."}

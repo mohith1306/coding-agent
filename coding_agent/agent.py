@@ -564,17 +564,33 @@ class CodingAgent:
 
     def _handle_list_tasks(self, intent: Intent) -> str:
         tasks = self.memory.get_by_type("task", limit=10)
-        if not tasks:
+        if tasks:
+            lines = []
+            for task in tasks:
+                meta = task["metadata"]
+                status = meta.get("status", "unknown")
+                files = meta.get("files_affected", "")
+                line = f"[{status}] {meta.get('description', '')}"
+                if files:
+                    line += f" ({files})"
+                lines.append(line)
+            return "\n".join(lines)
+        # No recorded tasks: summarize actual recent activity instead of
+        # dead-ending (also covers "what did you change" misclassifications).
+        turns = self.memory.recent_turns(5)
+        files = self.memory.get_by_type("file", limit=5)
+        if not turns and not files:
             return "No tasks recorded yet."
-        lines = []
-        for task in tasks:
-            meta = task["metadata"]
-            status = meta.get("status", "unknown")
-            files = meta.get("files_affected", "")
-            line = f"[{status}] {meta.get('description', '')}"
-            if files:
-                line += f" ({files})"
-            lines.append(line)
+        lines = ["No recorded tasks, but here's recent activity:"]
+        for turn in turns:
+            user_text = str(turn.get("user", turn.get("metadata", {}).get("content", "")))[:120]
+            turn_intent = turn.get("intent", turn.get("metadata", {}).get("intent", ""))
+            if user_text:
+                lines.append(f"- You asked: {user_text}" + (f" ({turn_intent})" if turn_intent else ""))
+        for event in files:
+            meta = event.get("metadata", {})
+            if meta.get("path"):
+                lines.append(f"- File {meta.get('operation', 'touched')}: {meta['path']}")
         return "\n".join(lines)
 
     def _handle_analyze_project(self, intent: Intent, context: Optional[AgentContext] = None) -> str:

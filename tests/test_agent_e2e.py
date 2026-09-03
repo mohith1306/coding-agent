@@ -198,3 +198,55 @@ class TestModelOverride:
 
         # Parser model should be unchanged
         assert parser.model == "my-default-model"
+
+
+# ---------------------------------------------------------------------------
+# list_tasks fallback tests
+# ---------------------------------------------------------------------------
+
+class TestListTasksFallback:
+    """list_tasks summarizes recent activity when no tasks are recorded."""
+
+    def _list_intent(self, workspace: Path, memory) -> tuple:
+        agent, parser = _make_agent(workspace, memory)
+        parser.intents = [
+            Intent(name="list_tasks", confidence=0.9, target="",
+                   reason="test", raw_message="what did you change"),
+        ]
+        return agent, parser
+
+    def test_empty_everything_dead_ends(self, workspace: Path) -> None:
+        agent, parser = self._list_intent(workspace, FakeMemory())
+        assert agent.handle("what did you change", model="test") == "No tasks recorded yet."
+
+    def test_falls_back_to_recent_activity(self, workspace: Path) -> None:
+        memory = FakeMemory()
+        memory.add_turn("create calculator.py", "created it",
+                        intent="create_file", target="calculator.py")
+        memory.add_file_event("calculator.py", "modified", "calc code")
+        agent, parser = self._list_intent(workspace, memory)
+
+        response = agent.handle("what did you change", model="test")
+        assert "No recorded tasks" in response
+        assert "calculator.py" in response
+        assert "create calculator.py" in response
+
+    def test_recorded_tasks_take_precedence(self, workspace: Path) -> None:
+        memory = FakeMemory()
+        memory.add_task("Write docs", status="done", files_affected=["README.md"])
+        memory.add_turn("other", "stuff")
+        agent, parser = self._list_intent(workspace, memory)
+
+        response = agent.handle("show tasks", model="test")
+        assert "[done] Write docs" in response
+        assert "recent activity" not in response
+
+
+def test_prompt_disambiguates_what_changed_vs_tasks() -> None:
+    from pathlib import Path as _Path
+
+    prompt = (_Path(__file__).parent.parent / "coding_agent" / "prompts"
+              / "intent_system_prompt.md").read_text(encoding="utf-8")
+    assert '"what did you change' in prompt
+    assert '"intent":"explain"' in prompt
+    assert 'list_tasks ONLY when the user explicitly says "tasks"' in prompt
