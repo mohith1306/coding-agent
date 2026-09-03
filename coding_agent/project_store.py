@@ -83,7 +83,12 @@ class ProjectStore:
         user_message: str,
         agent_response: str,
     ) -> None:
-        """Append a learning entry (capped); no-op on trivial turns or DB errors."""
+        """Append a learning entry (capped); no-op on trivial turns or DB errors.
+
+        The read-modify-write runs in ONE transaction holding a row lock
+        (SELECT ... FOR UPDATE) through commit, so concurrent turns cannot
+        overwrite each other's entries and the cap is enforced atomically.
+        """
         entry = _learning_entry(intent, target or "", user_message, agent_response)
         if entry is None:
             return
@@ -92,7 +97,7 @@ class ProjectStore:
             conn = get_connection()
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT learnings FROM project_contexts WHERE project_hash = %s",
+                    "SELECT learnings FROM project_contexts WHERE project_hash = %s FOR UPDATE",
                     (self.hash,),
                 )
                 row = cur.fetchone()
@@ -106,7 +111,7 @@ class ProjectStore:
                 conn = get_connection()
                 with conn.cursor() as cur:
                     cur.execute(
-                        "SELECT learnings FROM project_contexts WHERE project_hash = %s",
+                        "SELECT learnings FROM project_contexts WHERE project_hash = %s FOR UPDATE",
                         (self.hash,),
                     )
                     row = cur.fetchone()
@@ -205,12 +210,6 @@ class ProjectStore:
             "has_typecheck_config": scan.identity.has_typecheck_config,
         }
         key_files = [[p, k] for p, k in scan.key_files]
-        facts = {
-            "identity": identity,
-            "key_files": key_files,
-            "structure": scan.structure,
-            "learnings": [],
-        }
         conn = get_connection()
         try:
             with conn.cursor() as cur:
@@ -230,6 +229,17 @@ class ProjectStore:
                     ),
                 )
             conn.commit()
+            # Re-fetch: on ON CONFLICT DO NOTHING another process may have
+            # won the race — return the authoritative persisted row (with
+            # any concurrently stored learnings), not our local copy.
+            winner = self._fetch()
+            if winner is not None:
+                return winner
         finally:
             return_connection(conn)
-        return facts
+        return {
+            "identity": identity,
+            "key_files": key_files,
+            "structure": scan.structure,
+            "learnings": [],
+        }

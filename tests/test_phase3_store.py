@@ -13,12 +13,14 @@ from coding_agent.project_store import ProjectStore, project_hash
 class FakeTable:
     def __init__(self):
         self.rows: dict[str, dict] = {}
+        self.statements: list[str] = []
 
 
 class FakeCursor:
     def __init__(self, table: FakeTable):
         self._table = table
         self._result = None
+        self.statements: list[str] = table.statements
 
     def __enter__(self):
         return self
@@ -27,6 +29,7 @@ class FakeCursor:
         return False
 
     def execute(self, sql, params=None):
+        self.statements.append(" ".join(sql.split()))
         if "SELECT learnings" in sql:
             row = self._table.rows.get(params[0])
             self._result = (row["learnings"],) if row else None
@@ -188,6 +191,106 @@ def test_build_loads_facts_for_write_intents(tmp_path: Path) -> None:
     assert "python" in ctx.project_context
     prompt = builder.format_for_prompt(ctx)
     assert "--- Project Context ---" in prompt
+
+
+def test_record_learning_locks_row() -> None:
+    """Bug 2: the read-modify-write holds a row lock through commit."""
+    import tempfile
+
+    table = FakeTable()
+    ph = "abc123"
+    table.rows[ph] = {"identity": {}, "key_files": [], "structure": "",
+                      "learnings": []}
+    gc, rc = _patched(table)
+    with gc, rc:
+        store = ProjectStore(Path(tempfile.gettempdir()))
+        store.hash = ph  # point at the seeded row regardless of root
+        store.record_learning("explain", "", "question " + "q" * 100,
+                              "answer " + "a" * 200)
+    selects = [s for s in table.statements if s.startswith("SELECT learnings")]
+    assert selects, "expected a learnings SELECT"
+    assert all("FOR UPDATE" in s for s in selects)
+    assert len(table.rows[ph]["learnings"]) == 1
+
+
+def test_create_returns_winning_row_on_conflict(tmp_path: Path) -> None:
+    """Bug 3: loser of the insert race returns persisted facts + learnings."""
+    _init_git(tmp_path, {"app.py": "x\n"})
+    table = FakeTable()
+    ph = project_hash(tmp_path)
+    table.rows[ph] = {
+        "identity": {"language": "python"}, "key_files": [["app.py", "entry point"]],
+        "structure": "winner structure",
+        "learnings": [{"ts": "t", "intent": "explain", "target": "", "summary": "winner learning"}],
+    }
+    gc, rc = _patched(table)
+    with gc, rc:
+        facts = ProjectStore(tmp_path)._create()
+    assert facts["structure"] == "winner structure"
+    assert facts["learnings"] == table.rows[ph]["learnings"]
+    assert facts["learnings"] != []
+
+
+def test_finish_node_records_learning_both_paths() -> None:
+    """Bug 1: graph finish persists learnings on read-only AND write paths."""
+    from types import SimpleNamespace
+
+    from coding_agent.graph.nodes.finish import finish
+
+    recorded = []
+
+    class FakeStore:
+        def record_learning(self, intent, target, user_message, agent_response):
+            recorded.append({"intent": intent, "response": agent_response})
+
+    deps = {"configurable": {
+        "context_builder": SimpleNamespace(project_store=FakeStore()),
+        "memory": None,
+    }}
+
+    # Read-only path: pre-existing final_response, no changed files
+    state_ro = {
+        "user_message": "what is this",
+        "intent": {"name": "explain", "target": ""},
+        "context": None,
+        "final_response": "read-only answer with enough length " + "x" * 100,
+        "changed_files": [],
+        "tool_results": [],
+        "verification_result": None,
+        "repair_attempts": 0,
+        "conversation": [],
+    }
+    out = finish(state_ro, deps)  # type: ignore[arg-type]
+    assert out["execution_trace"]
+    assert len(recorded) == 1
+    assert "read-only answer" in recorded[0]["response"]
+
+    # Write path: built response from tool results
+    state_wr = dict(state_ro, final_response=None, changed_files=["a.py"],
+                    tool_results=[{"name": "run_command", "result": "ok " + "y" * 100}])
+    finish(state_wr, deps)  # type: ignore[arg-type]
+    assert len(recorded) == 2
+    assert recorded[1]["intent"] == "explain"
+
+
+def test_finish_without_store_still_completes() -> None:
+    """Bug 1: missing project_store (old fakes) must not break finish."""
+    from coding_agent.graph.nodes.finish import finish
+
+    deps = {"configurable": {"memory": None}}  # no context_builder at all
+    state = {
+        "user_message": "hi",
+        "intent": {"name": "explain", "target": ""},
+        "context": None,
+        "final_response": "hello there",
+        "changed_files": [],
+        "tool_results": [],
+        "verification_result": None,
+        "repair_attempts": 0,
+        "conversation": [],
+    }
+    out = finish(state, deps)  # type: ignore[arg-type]
+    assert out["execution_trace"]
 
 
 def test_build_offline_omits_project_section(tmp_path: Path) -> None:
