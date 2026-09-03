@@ -61,6 +61,23 @@ def read_capped(path: Path) -> str | None:
     return text
 
 
+def normalize_target(root: Path, target: str) -> str:
+    """Normalize an intent target to a canonical root-relative path.
+
+    Accepts ./rel, nested, absolute in-root, and separator variants;
+    returns "" when the target is not a file inside the root.
+    """
+    if not target:
+        return ""
+    resolved = resolve_within_root(root, target)
+    if resolved is None:
+        return ""
+    try:
+        return str(resolved.relative_to(root.resolve()))
+    except ValueError:
+        return ""
+
+
 def collect_relevant_files(
     root: Path,
     paths: list[str],
@@ -68,19 +85,24 @@ def collect_relevant_files(
 ) -> list[dict]:
     """Read bodies for candidate repo-relative paths.
 
-    Returns [{path, content}] for readable files (in input order,
-    deduplicated, capped at max_files). Unreadable entries are skipped
-    silently — absence from the list signals the skip.
+    Returns [{path, content}] with root-relative canonical paths, in
+    input order, capped at max_files. Deduplication happens AFTER
+    resolution, so aliases (foo.py, ./foo.py, sub/../foo.py) collapse
+    to one entry instead of consuming slots twice. Unreadable entries
+    are skipped silently.
     """
     collected: list[dict] = []
     seen: set[str] = set()
     for rel in paths:
-        if len(collected) >= max_files or not rel or rel in seen:
+        if len(collected) >= max_files or not rel:
             continue
-        seen.add(rel)
         resolved = resolve_within_root(root, rel)
         if resolved is None:
             continue
+        canonical = str(resolved)
+        if canonical in seen:
+            continue
+        seen.add(canonical)
         content = read_capped(resolved)
         if content is None:
             continue
@@ -89,5 +111,5 @@ def collect_relevant_files(
         except ValueError:
             display = rel
         collected.append({"path": display, "content": content})
-    logger.info("Collected %d/%d relevant files for context", len(collected), len(seen))
+    logger.info("Collected %d files (%d unique candidates)", len(collected), len(seen))
     return collected

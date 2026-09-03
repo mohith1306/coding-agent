@@ -43,6 +43,7 @@ class ContextSection:
     header: str
     body: str
     cap_tokens: int = 0  # 0 = use SECTION_CAPS default for name
+    fence_aware: bool = False  # re-close ``` fences if truncation cuts one
 
 
 def budget_total() -> int:
@@ -54,19 +55,35 @@ def budget_total() -> int:
         return DEFAULT_TOTAL_TOKENS
 
 
-def truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Truncate text to ~max_tokens (char heuristic), marking truncation."""
+def truncate_to_tokens(text: str, max_tokens: int, fence_aware: bool = False) -> str:
+    """Truncate text to fit max_tokens (char heuristic), marking truncation.
+
+    Headers/separators/markers are the caller's responsibility to reserve
+    via max_tokens. When fence_aware, space for a closing fence is
+    reserved and an unbalanced cut is re-closed. Degenerate budgets
+    (too small for even the marker) hard-cut without a marker so the
+    bound always holds.
+    """
     if estimate_tokens(text) <= max_tokens:
         return text
-    char_budget = max(0, max_tokens * 4 - len(TRUNCATION_MARKER))
-    return text[:char_budget] + TRUNCATION_MARKER
+    reserve = TRUNCATION_MARKER + ("\n```" if fence_aware else "")
+    if max_tokens * 4 <= len(reserve):
+        out = text[:max_tokens * 4]
+        if fence_aware and out.count("```") % 2 == 1:
+            out = out[:out.rfind("```")]  # drop dangling opener (shorter, still in budget)
+        return out
+    out = text[:max_tokens * 4 - len(reserve)] + TRUNCATION_MARKER
+    if fence_aware and out.count("```") % 2 == 1:
+        out += "\n```"
+    return out
 
 
 def assemble(sections: list[ContextSection], total_tokens: int = 0) -> str:
     """Assemble sections in priority order within the token budget.
 
-    Each section is capped at min(its cap, remaining total). Empty bodies
-    are skipped. Returns the joined prompt string.
+    Each section chunk (header + body together) is truncated to
+    min(its cap, remaining total), so headers count against the budget
+    and output never exceeds the total. Empty bodies are skipped.
     """
     total = total_tokens or budget_total()
     parts: list[str] = []
@@ -78,16 +95,10 @@ def assemble(sections: list[ContextSection], total_tokens: int = 0) -> str:
         allow = min(cap, total - used)
         if allow <= 0:
             continue
-        body = truncate_to_tokens(section.body, allow)
-        chunk = f"{section.header}\n{body}" if section.header else body
-        chunk_tokens = estimate_tokens(chunk)
-        # Header itself can push us slightly over on tiny budgets; accept
-        # the first section regardless so output is never empty.
-        if not parts or used + chunk_tokens <= total + 50:
-            parts.append(chunk)
-            used += chunk_tokens
-        else:
-            break
+        chunk = f"{section.header}\n{section.body}" if section.header else section.body
+        chunk = truncate_to_tokens(chunk, allow, fence_aware=section.fence_aware)
+        parts.append(chunk)
+        used += estimate_tokens(chunk)
     assembled = "\n".join(parts)
     logger.info("Assembled context: %d tokens across %d sections (budget %d)",
                 estimate_tokens(assembled), len(parts), total)

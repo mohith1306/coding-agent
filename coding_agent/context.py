@@ -4,8 +4,8 @@ from pathlib import Path
 import subprocess
 from typing import Optional
 
-from .context_budget import ContextSection, assemble
-from .file_context import collect_relevant_files
+from .context_budget import SECTION_CAPS, ContextSection, assemble, truncate_to_tokens
+from .file_context import collect_relevant_files, normalize_target
 from .memory import MemoryStore
 from .project_context import ProjectContext
 from .project_scan import ProjectIdentity, detect_identity, get_tracked_files
@@ -120,7 +120,9 @@ class ContextBuilder:
         if load_context:
             project_context = self.get_or_create_project_context()
 
-        # Inline bodies of the target + recently touched files for code intents
+        # Inline bodies of the target + recently touched files for code intents.
+        # Recent file events are queried independently: semantic results may
+        # contain only chats, which must not suppress file injection.
         target_path = ""
         relevant_file_contents: list[dict] = []
         if intent_name in CODE_INTENTS:
@@ -129,12 +131,15 @@ class ContextBuilder:
                 for item in similar_context
                 if item.get("metadata", {}).get("doc_type") == "file"
             ]
-            candidates = ([intent_target] if intent_target else []) + memory_paths
+            recent_paths = [
+                item.get("metadata", {}).get("path", "")
+                for item in self.memory.get_by_type("file", limit=3)
+            ]
+            candidates = ([intent_target] if intent_target else []) + memory_paths + recent_paths
             relevant_file_contents = collect_relevant_files(self.root, candidates)
-            if relevant_file_contents and intent_target:
-                first = relevant_file_contents[0]["path"]
-                if first == intent_target or first.endswith("/" + intent_target.lstrip("/")):
-                    target_path = first
+            canonical_target = normalize_target(self.root, intent_target)
+            if canonical_target and any(f["path"] == canonical_target for f in relevant_file_contents):
+                target_path = canonical_target
 
         return AgentContext(
             chat_history=chat_history,
@@ -177,20 +182,24 @@ class ContextBuilder:
 
         sections = [ContextSection("identity", "", "\n".join(header_lines))]
 
-        # Target file body first (highest priority), then other relevant files
+        # Target file body first (highest priority), then other relevant files.
+        # Bodies are pre-budgeted per file so cuts land between files with
+        # fences intact; the assembler re-closes fences as a backstop.
         target_items = [f for f in ctx.relevant_file_contents if f["path"] == ctx.target_path] if ctx.target_path else []
         other_items = [f for f in ctx.relevant_file_contents if f not in target_items]
         if target_items:
             sections.append(ContextSection(
                 "target",
                 "--- Target File ---",
-                self._format_files(target_items),
+                self._format_files(target_items, SECTION_CAPS["target"]),
+                fence_aware=True,
             ))
         if other_items:
             sections.append(ContextSection(
                 "files",
                 "--- Relevant Files ---",
-                self._format_files(other_items),
+                self._format_files(other_items, SECTION_CAPS["files"]),
+                fence_aware=True,
             ))
 
         if ctx.project_context:
@@ -231,11 +240,20 @@ class ContextBuilder:
         return assemble(sections)
 
     @staticmethod
-    def _format_files(items: list[dict]) -> str:
-        """Render collected file bodies as fenced blocks."""
+    def _format_files(items: list[dict], cap_tokens: int) -> str:
+        """Render collected file bodies as fenced blocks.
+
+        Each file body is truncated to an equal share of cap_tokens
+        BEFORE fencing, so budget cuts land between files and every
+        block keeps balanced fences.
+        """
+        from .context_budget import truncate_to_tokens
+
+        per_file = max(1, cap_tokens // max(1, len(items)))
         blocks = []
         for item in items:
-            blocks.append(f"### {item['path']}\n```\n{item['content']}\n```")
+            body = truncate_to_tokens(item["content"], per_file)
+            blocks.append(f"### {item['path']}\n```\n{body}\n```")
         return "\n\n".join(blocks)
 
     def _git_status(self) -> tuple[str, list[str]]:
