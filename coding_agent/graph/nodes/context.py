@@ -29,12 +29,9 @@ def build_context(state: AgentState, config: Optional[RunnableConfig] = None) ->
     if context_builder is None:
         raise RuntimeError("context_builder not provided in config")
 
-    # Only load project context for intents that need it
-    should_load_context = intent_name in {"explain", "unknown", "analyze_project"}
     intent_target = intent.get("target", "") if intent else ""
     context = context_builder.build(
         user_message,
-        load_context=should_load_context,
         intent_name=intent_name,
         intent_target=intent_target,
     )

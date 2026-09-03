@@ -118,11 +118,8 @@ class CodingAgent:
             "bullets": self._action_bullets(intent),
         })
         emit({"type": "phase", "message": f"Performing {intent.name}…"})
-        # Only load project context for intents that need it
-        should_load_context = intent.name in {"explain", "unknown", "analyze_project"}
         context = self.context_builder.build(
             user_message,
-            load_context=should_load_context,
             intent_name=intent.name,
             intent_target=intent.target or "",
         )
@@ -136,13 +133,13 @@ class CodingAgent:
             target=intent.target,
         )
 
-        # Update persistent project context with new learnings (only if context was loaded)
-        if tool_response and len(tool_response) > 50 and should_load_context:
-            self.context_builder.project_context.update_after_turn(
+        # Record project learnings for every intent (store filters trivial turns)
+        if tool_response:
+            self.context_builder.project_store.record_learning(
+                intent=intent.name,
+                target=intent.target or "",
                 user_message=user_message,
                 agent_response=tool_response,
-                intent=intent.name,
-                target=intent.target,
             )
 
         self._maybe_compact()

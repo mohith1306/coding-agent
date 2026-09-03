@@ -26,7 +26,7 @@ SECTION_CAPS: dict[str, int] = {
     "identity": 300,      # language/branch/config/dirty — tiny, always first
     "target": 4_000,      # file being created/modified
     "files": 4_000,       # relevant file contents
-    "project": 3_000,     # project facts / ProjectContext.md
+    "project": 3_000,     # project facts from project_store
     "related": 1_500,     # retrieved similar turns/file events
     "history": 2_500,     # recent chat turns
     "summary": 1_500,     # compaction summary

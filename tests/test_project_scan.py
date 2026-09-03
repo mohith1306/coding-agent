@@ -3,7 +3,7 @@
 Verifies:
 - estimate_tokens matches the legacy compaction formula (parity).
 - project_scan detection matches legacy ContextBuilder behavior.
-- ProjectContext.generate_initial_context still renders all sections.
+- scan_project provides all inputs the prompt renderer needs.
 """
 
 import subprocess
@@ -105,21 +105,17 @@ def test_scan_matches_context_builder(tmp_path: Path) -> None:
     assert scan.identity == identity
 
 
-def test_project_context_initial_sections(tmp_path: Path) -> None:
-    """generate_initial_context still renders all sections via shared scan."""
-    from coding_agent.project_context import ProjectContext
-
+def test_scan_provides_prompt_inputs(tmp_path: Path) -> None:
+    """scan_project yields every input the project prompt section needs."""
     _init_repo(tmp_path, {
         "requirements.txt": "x\n",
         "app.py": "print(1)\n",
     })
-    pc = ProjectContext(tmp_path)
-    content = pc.generate_initial_context(None)  # type: ignore[arg-type]
-    assert "# Project Context" in content
-    assert "**Language**: python" in content
-    assert "## Key Files" in content
-    assert "## Structure" in content
-    assert "## Chat History & Learnings" in content
+    scan = scan_project(tmp_path)
+    assert scan.identity.language == "python"
+    assert scan.key_files, "expected key files"
+    assert "app.py" in scan.structure
+    assert "app.py" in scan.tracked_files
 
 
 def test_get_tracked_files_empty_outside_repo(tmp_path: Path) -> None:

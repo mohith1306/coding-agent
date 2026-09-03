@@ -1,11 +1,10 @@
 """Project scanning — single implementation of project detection.
 
 Consolidates the language/config/key-file/structure detection logic
-previously duplicated across ``context.py`` (``ContextBuilder``) and
-``project_context.py`` (``ProjectContext``). Behavior is unchanged;
-both callers delegate here.
+previously duplicated across ``context.py`` and the retired
+``project_context.py``. Behavior is unchanged; callers delegate here.
 
-In Phase 3 the scan results feed the Postgres ``project_contexts``
+Scan results feed the Postgres ``project_contexts``
 table instead of the markdown file.
 """
 

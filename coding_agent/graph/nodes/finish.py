@@ -30,6 +30,7 @@ def finish(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[s
 
     # If we already have a final_response (from read-only path or direct agent response)
     if final_response and not changed_files:
+        _record_learning(deps, state, final_response)
         emit({"type": "done", "response": final_response})
         return {
             "execution_trace": [{"node": "finish", "latency_ms": elapsed_ms(start)}],
@@ -84,9 +85,33 @@ def finish(state: AgentState, config: Optional[RunnableConfig] = None) -> dict[s
         except Exception as error:
             logger.warning("Memory recording failed: %s", error)
 
+    _record_learning(deps, state, response)
+
     emit({"type": "done", "response": response})
 
     return {
         "final_response": response,
         "execution_trace": [{"node": "finish", "latency_ms": elapsed_ms(start)}],
     }
+
+
+def _record_learning(deps: dict, state: AgentState, response: str) -> None:
+    """Persist a project learning for this turn (best-effort, never raises).
+
+    Mirrors the legacy CodingAgent path so the default LangGraph runtime
+    populates the learnings store too, on both read-only and write paths.
+    """
+    try:
+        context_builder = deps.get("context_builder")
+        project_store = getattr(context_builder, "project_store", None)
+        if project_store is None or not response:
+            return
+        intent = state.get("intent", {})
+        project_store.record_learning(
+            intent=intent.get("name", "unknown") if intent else "unknown",
+            target=intent.get("target", "") if intent else "",
+            user_message=state.get("user_message", ""),
+            agent_response=response,
+        )
+    except Exception as error:
+        logger.warning("Project learning recording failed: %s", error)
