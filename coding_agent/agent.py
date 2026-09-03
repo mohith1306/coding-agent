@@ -120,7 +120,12 @@ class CodingAgent:
         emit({"type": "phase", "message": f"Performing {intent.name}…"})
         # Only load project context for intents that need it
         should_load_context = intent.name in {"explain", "unknown", "analyze_project"}
-        context = self.context_builder.build(user_message, load_context=should_load_context)
+        context = self.context_builder.build(
+            user_message,
+            load_context=should_load_context,
+            intent_name=intent.name,
+            intent_target=intent.target or "",
+        )
         tool_response = self._handle_intent(intent, context, confirmed=confirmed)
         logger.info("Intent %s handled (confirmed=%s)", intent.name, confirmed)
 

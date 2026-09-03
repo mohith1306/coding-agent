@@ -31,7 +31,13 @@ def build_context(state: AgentState, config: Optional[RunnableConfig] = None) ->
 
     # Only load project context for intents that need it
     should_load_context = intent_name in {"explain", "unknown", "analyze_project"}
-    context = context_builder.build(user_message, load_context=should_load_context)
+    intent_target = intent.get("target", "") if intent else ""
+    context = context_builder.build(
+        user_message,
+        load_context=should_load_context,
+        intent_name=intent_name,
+        intent_target=intent_target,
+    )
 
     context_dict = {
         "chat_history": context.chat_history,
@@ -47,6 +53,8 @@ def build_context(state: AgentState, config: Optional[RunnableConfig] = None) ->
         "has_typecheck_config": context.has_typecheck_config,
         "session_summary": context.session_summary,
         "project_context": context.project_context,
+        "target_path": context.target_path,
+        "relevant_file_contents": context.relevant_file_contents,
     }
 
     # Build formatted context for prompt
