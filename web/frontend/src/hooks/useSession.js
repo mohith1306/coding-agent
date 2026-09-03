@@ -81,7 +81,10 @@ export function useSession(patchTab, activeIdRef) {
   const refreshFiles = useCallback(
     async (tab, patchTab) => {
       const id = activeIdRef.current;
-      if (!id || !tab.project) return;
+      if (!id) return;
+      // No project gate: folder-less sessions have a per-session workspace
+      // the agent creates files in — the tree must reflect those too.
+      // 404 (no workspace yet) is caught below and ignored.
 
       try {
         const data = await apiGet(`/api/sessions/${id}/files`);
