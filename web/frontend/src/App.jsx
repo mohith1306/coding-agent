@@ -68,12 +68,9 @@ export default function App() {
       .then((data) => data && setCwd(data.cwd || ""));
   }, []);
 
-  // Auto-open picker
-  useEffect(() => {
-    if (tab.id && !tab.project && !tab.busy) {
-      setPickerOpen(true);
-    }
-  }, [tab.id, tab.project, tab.busy]);
+  // Folder selection is optional: new sessions start with the picker's
+  // "Open project…" button in the header. Chatting without a project
+  // uses a per-session workspace the agent creates on first message.
 
   // Re-bind project on refresh (backend may have lost the workspace mapping)
   const rebindRef = useRef(null);
@@ -286,7 +283,7 @@ export default function App() {
                 <div className="empty">
                   {tab.project
                     ? "Ask me to search, read, create, modify, or run code in this project."
-                    : "Open a project to start working with the coding agent."}
+                    : "Ask anything — no folder needed. Or open a project to work on existing code."}
                 </div>
               )}
               {tab.messages.map((msg, i) => (
@@ -311,7 +308,6 @@ export default function App() {
             input={tab.input}
             model={tab.model}
             busy={tab.busy}
-            hasProject={!!tab.project}
             onInputChange={(val) => patchTab(tab.id, { input: val })}
             onSubmit={handleSend}
             onModelChange={(val) => patchTab(tab.id, { model: val })}

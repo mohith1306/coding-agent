@@ -9,7 +9,7 @@ const MODELS = [
   { value: "qwen/qwen3-235b-a22b", label: "Qwen3 235B" },
 ];
 
-export default function ChatComposer({ input, model, busy, hasProject, onInputChange, onSubmit, onModelChange }) {
+export default function ChatComposer({ input, model, busy, onInputChange, onSubmit, onModelChange }) {
   const textareaRef = useRef(null);
   const [isFocused, setIsFocused] = useState(false);
 
@@ -35,12 +35,8 @@ export default function ChatComposer({ input, model, busy, hasProject, onInputCh
           }}
           onFocus={() => setIsFocused(true)}
           onBlur={() => setIsFocused(false)}
-          placeholder={
-            hasProject
-              ? "Ask anything, / for commands, @ for context..."
-              : "Open a project first..."
-          }
-          disabled={busy || !hasProject}
+          placeholder="Ask anything, / for commands, @ for context..."
+          disabled={busy}
           rows={1}
           autoFocus
           className="composer-textarea"
@@ -51,7 +47,7 @@ export default function ChatComposer({ input, model, busy, hasProject, onInputCh
               type="button"
               className="toolbar-btn"
               title="Attach file"
-              disabled={busy || !hasProject}
+              disabled={busy}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
@@ -61,7 +57,7 @@ export default function ChatComposer({ input, model, busy, hasProject, onInputCh
               type="button"
               className="toolbar-btn"
               title="Add context (@)"
-              disabled={busy || !hasProject}
+              disabled={busy}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="4" />
@@ -74,7 +70,7 @@ export default function ChatComposer({ input, model, busy, hasProject, onInputCh
               <select
                 value={model}
                 onChange={(e) => onModelChange(e.target.value)}
-                disabled={busy || !hasProject}
+                disabled={busy}
                 className="model-select"
                 aria-label="Select model"
               >
@@ -91,7 +87,7 @@ export default function ChatComposer({ input, model, busy, hasProject, onInputCh
             <button
               type="submit"
               className="send-btn"
-              disabled={busy || !input.trim() || !hasProject}
+              disabled={busy || !input.trim()}
               title="Send message (Enter)"
             >
               {busy ? (
