@@ -280,7 +280,12 @@ class FakeContextBuilder:
     def __init__(self) -> None:
         pass
 
-    def build(self, user_message: str, load_context: bool = True) -> Any:
+    def build(
+        self,
+        user_message: str,
+        intent_name: str = "",
+        intent_target: str = "",
+    ) -> Any:
         from types import SimpleNamespace
         return SimpleNamespace(
             chat_history=[],
@@ -296,6 +301,8 @@ class FakeContextBuilder:
             has_typecheck_config=False,
             session_summary="",
             project_context="",
+            target_path="",
+            relevant_file_contents=[],
         )
 
     def format_for_prompt(self, context: Any) -> str:

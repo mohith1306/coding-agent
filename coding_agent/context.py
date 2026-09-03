@@ -7,8 +7,8 @@ from typing import Optional
 from .context_budget import SECTION_CAPS, ContextSection, assemble, truncate_to_tokens
 from .file_context import collect_relevant_files, normalize_target
 from .memory import MemoryStore
-from .project_context import ProjectContext
 from .project_scan import ProjectIdentity, detect_identity, get_tracked_files
+from .project_store import ProjectStore
 
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,7 @@ class ContextBuilder:
     def __init__(self, memory: MemoryStore, root: Optional[Path] = None) -> None:
         self.memory = memory
         self.root = (root or Path.cwd()).resolve()
-        self.project_context = ProjectContext(self.root, memory)
+        self.project_store = ProjectStore(self.root)
         # Instance-level caches: scan results are root-specific, so sharing
         # them across builders (module globals) leaks one project's identity
         # into another when multiple sessions are active.
@@ -65,36 +65,9 @@ class ContextBuilder:
         self._identity_cache = None
         self._tracked_files_cache = None
 
-    def get_or_create_project_context(self) -> str:
-        """Get existing project context or create initial context for new project."""
-        # Clear any stale content first
-        self.project_context.clear_stale_content()
-
-        if not self.project_context.exists():
-            initial_context = self.project_context.generate_initial_context(self)
-            self.project_context.save(initial_context)
-            return ""
-
-        # Check if context is stale (path mismatch)
-        existing = self.project_context.load()
-        if existing:
-            for line in existing.split("\n"):
-                if line.startswith("**Path**:"):
-                    context_path = line.replace("**Path**:", "").strip().strip("`")
-                    if context_path != str(self.root):
-                        logger.info("Context is stale (path mismatch: %s vs %s), regenerating", context_path, self.root)
-                        self.project_context.context_file.unlink(missing_ok=True)
-                        initial_context = self.project_context.generate_initial_context(self)
-                        self.project_context.save(initial_context)
-                        return ""
-                    break
-
-        return self.project_context.get_context_for_prompt()
-
     def build(
         self,
         user_message: str,
-        load_context: bool = False,
         intent_name: str = "",
         intent_target: str = "",
     ) -> AgentContext:
@@ -115,10 +88,11 @@ class ContextBuilder:
         branch, dirty_files = self._git_status()
         identity = self._detect_project_identity()
 
-        # Only load/create project context when explicitly requested
-        project_context = ""
-        if load_context:
-            project_context = self.get_or_create_project_context()
+        # Project facts load on every build (cheap DB read, budgeted in
+        # the prompt) — write intents need them as much as explain-path.
+        project_context = ProjectStore.format_for_prompt(
+            self.project_store.get_or_create()
+        )
 
         # Inline bodies of the target + recently touched files for code intents.
         # Recent file events are queried independently: semantic results may
