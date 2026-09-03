@@ -15,7 +15,9 @@ from typing import Optional
 import psycopg2
 from psycopg2.extras import RealDictCursor, Json
 
-from .db import get_connection, return_connection, init_db
+from .db import ensure_vector_column, get_connection, return_connection, init_db, vector_available
+from .embeddings import EmbeddingClient, embed_dim, embeddings_enabled, to_pgvector
+from .keyword_search import rank_documents
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,38 @@ class MemoryStore:
             raise
 
         self._last_ts = 0.0
+        self._embed_client: Optional[EmbeddingClient] = None
+        self._vector_ready: Optional[bool] = None
+
+    def _vector_enabled(self) -> bool:
+        """Whether the vector path is usable (cached per instance)."""
+        if self._vector_ready is not None:
+            return self._vector_ready
+        if not embeddings_enabled():
+            self._vector_ready = False
+            return False
+        try:
+            self._vector_ready = bool(ensure_vector_column(embed_dim()))
+        except Exception as error:
+            logger.warning("Vector setup failed, using keyword fallback: %s", error)
+            self._vector_ready = False
+        return self._vector_ready
+
+    def _embed(self, text: str) -> Optional[list[float]]:
+        """Best-effort embedding; None on any failure (never raises)."""
+        if not self._vector_enabled():
+            return None
+        try:
+            if self._embed_client is None:
+                self._embed_client = EmbeddingClient()
+            vec = self._embed_client.embed(text)
+            if vec and len(vec) != embed_dim():
+                logger.warning("Embedding dim %d != expected %d; skipping", len(vec), embed_dim())
+                return None
+            return vec
+        except Exception as error:
+            logger.warning("Embedding failed, storing without vector: %s", error)
+            return None
 
     def _next_timestamp(self) -> float:
         """Generate a monotonically increasing timestamp."""
@@ -67,21 +101,27 @@ class MemoryStore:
             "timestamp": self._next_timestamp(),
         }
 
+        content = f"User: {user_message}\nAgent: {agent_response}"
+        vec = self._embed(content)
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO agent_memory (id, doc_type, content, metadata)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (
-                        doc_id,
-                        "chat",
-                        f"User: {user_message}\nAgent: {agent_response}",
-                        Json(metadata),
-                    ),
-                )
+                if vec is not None:
+                    cur.execute(
+                        """
+                        INSERT INTO agent_memory (id, doc_type, content, metadata, embedding)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (doc_id, "chat", content, Json(metadata), to_pgvector(vec)),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO agent_memory (id, doc_type, content, metadata)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (doc_id, "chat", content, Json(metadata)),
+                    )
             conn.commit()
         except Exception as error:
             conn.rollback()
@@ -146,16 +186,26 @@ class MemoryStore:
             "timestamp": self._next_timestamp(),
         }
 
+        vec = self._embed(text)
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO agent_memory (id, doc_type, content, metadata)
-                    VALUES (%s, %s, %s, %s)
-                    """,
-                    (doc_id, "file", text[:2000], Json(metadata)),
-                )
+                if vec is not None:
+                    cur.execute(
+                        """
+                        INSERT INTO agent_memory (id, doc_type, content, metadata, embedding)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (doc_id, "file", text[:2000], Json(metadata), to_pgvector(vec)),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO agent_memory (id, doc_type, content, metadata)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        (doc_id, "file", text[:2000], Json(metadata)),
+                    )
             conn.commit()
         except Exception as error:
             conn.rollback()
@@ -298,17 +348,129 @@ class MemoryStore:
         doc_type: Optional[str] = None,
         max_distance: float = 0.95,
     ) -> list[dict]:
-        """Retrieve similar documents using vector search.
+        """Retrieve similar documents: pgvector cosine search, keyword fallback.
 
-        Currently returns empty - will be implemented with pgvector embeddings.
+        Returns [{id, document, metadata, distance}] with lower distance
+        first. Falls back to keyword ranking only when vectors are
+        unavailable — a successful search with no qualifying matches
+        returns [] without fallback. max_distance applies to both paths.
         """
-        logger.info(
-            "Vector search (stubbed): query=%s k=%s doc_type=%s",
-            query[:80],
-            k,
-            doc_type,
-        )
-        return []
+        if self._vector_enabled():
+            try:
+                results = self._vector_search(query, k, doc_type, max_distance)
+            except Exception as error:
+                logger.warning("Vector search failed, using keyword fallback: %s", error)
+                results = None
+            if results is not None:
+                return results
+        return self._keyword_search(query, k, doc_type, max_distance)
+
+    def _vector_search(
+        self,
+        query: str,
+        k: int,
+        doc_type: Optional[str],
+        max_distance: float,
+    ) -> Optional[list[dict]]:
+        """Cosine-distance search over stored embeddings.
+
+        Returns None when the vector path is unavailable (caller falls
+        back); otherwise the matches within max_distance (possibly empty).
+        """
+        if not vector_available():
+            return None
+        query_vec = self._embed(query)
+        if not query_vec:
+            return None
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if doc_type:
+                    cur.execute(
+                        """
+                        SELECT id, content, metadata,
+                               embedding <=> %s::vector AS distance
+                        FROM agent_memory
+                        WHERE embedding IS NOT NULL AND doc_type = %s
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (to_pgvector(query_vec), doc_type, to_pgvector(query_vec), k),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, content, metadata,
+                               embedding <=> %s::vector AS distance
+                        FROM agent_memory
+                        WHERE embedding IS NOT NULL
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (to_pgvector(query_vec), to_pgvector(query_vec), k),
+                    )
+                rows = cur.fetchall()
+            results = []
+            for row in rows:
+                dist = float(row["distance"])
+                if dist <= max_distance:
+                    results.append({
+                        "id": str(row["id"]),
+                        "document": row["content"],
+                        "metadata": row["metadata"],
+                        "distance": dist,
+                    })
+            logger.info("Vector search: query=%s returned %d/%d", query[:80], len(results), len(rows))
+            return results
+        finally:
+            return_connection(conn)
+
+    def _keyword_search(
+        self,
+        query: str,
+        k: int,
+        doc_type: Optional[str],
+        max_distance: float = 0.95,
+    ) -> list[dict]:
+        """Keyword-overlap ranking over recent rows (no vectors needed).
+
+        Applies the same max_distance bound as vector search so fallback
+        results honor the caller's constraint.
+        """
+        conn = get_connection()
+        try:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                if doc_type:
+                    cur.execute(
+                        """
+                        SELECT id, content, metadata
+                        FROM agent_memory
+                        WHERE doc_type = %s
+                        ORDER BY created_at DESC
+                        LIMIT 200
+                        """,
+                        (doc_type,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT id, content, metadata
+                        FROM agent_memory
+                        ORDER BY created_at DESC
+                        LIMIT 200
+                        """
+                    )
+                rows = cur.fetchall()
+            docs = [
+                {"id": str(r["id"]), "document": r["content"], "metadata": r["metadata"]}
+                for r in rows
+            ]
+        finally:
+            return_connection(conn)
+        results = rank_documents(query, docs, top_k=k)
+        results = [r for r in results if r["distance"] <= max_distance]
+        logger.info("Keyword search: query=%s returned %d", query[:80], len(results))
+        return results
 
     # -- raw filter (no vector) --
 
@@ -462,7 +624,17 @@ class InMemoryMemoryStore:
         return [{"key": k, "value": v} for k, v in sorted(self._prefs.items())][:limit]
 
     def retrieve_similar(self, query: str, k: int = 5, doc_type=None, max_distance: float = 0.95) -> list[dict]:
-        return []
+        docs = [
+            {"id": r["id"], "document": r["document"], "metadata": r["metadata"]}
+            for r in self._rows
+            if doc_type is None or r["doc_type"] == doc_type
+        ]
+        # Most recent first on score ties (stable, deterministic)
+        docs.sort(key=lambda r: r["metadata"].get("timestamp", 0), reverse=True)
+        ranked = rank_documents(query, docs, top_k=k)
+        # rank_documents sorts by score; restore recency tiebreak explicitly
+        ranked.sort(key=lambda r: (r["distance"], -r["metadata"].get("timestamp", 0)))
+        return [r for r in ranked if r["distance"] <= max_distance]
 
     def get_by_type(self, doc_type: str, limit: int = 20, offset: int = 0) -> list[dict]:
         rows = [r for r in self._rows if r["doc_type"] == doc_type]
